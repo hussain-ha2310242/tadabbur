@@ -1,6 +1,0 @@
-fastapi
-uvicorn[standard]
-camel-tools
-httpx
-pyyaml
-fsrs

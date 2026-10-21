@@ -1014,10 +1014,9 @@ function ReadingView({
       }
       try {
         if (loadedFor.current !== si) {
-          const res = await fetch(api.ttsUrl(text.sentences[si].text));
-          if (!res.ok) throw new Error(await res.text());
+          const audioBlob = await api.tts(text.sentences[si].text);
           if (urlRef.current) URL.revokeObjectURL(urlRef.current);
-          urlRef.current = URL.createObjectURL(await res.blob());
+          urlRef.current = URL.createObjectURL(audioBlob);
           audio.src = urlRef.current;
           audio.onended = () => setPlaying(null);
           loadedFor.current = si;

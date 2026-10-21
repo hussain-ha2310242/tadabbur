@@ -1,19 +1,9 @@
 import type { CSSProperties, ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { DayActivity, Profile, Streak } from "../api";
+import type { DayActivity, Profile, Stats, Streak } from "../api";
+import { Account } from "../Auth";
 import { Icon } from "../icons";
-
-type Stats = {
-  known: number;
-  learning: number;
-  ignored: number;
-  phrases: number;
-  due: number;
-  texts: number;
-  streak?: Streak;
-  name?: string;
-};
 
 /** The eight-pointed star from the title rule. Filled when today already
  *  counts towards the streak, an outline when it still needs study. */
@@ -43,9 +33,9 @@ export function ProfileChip({ onOpen, refresh }: { onOpen: () => void; refresh?:
   const [me, setMe] = useState<{ name: string; streak: Streak } | null>(null);
 
   useEffect(() => {
-    fetch("/api/stats")
-      .then((r) => r.json())
-      .then((d: Stats) => d.streak && setMe({ name: d.name || "profile", streak: d.streak }))
+    api
+      .stats()
+      .then((d) => setMe({ name: d.name || "profile", streak: d.streak }))
       .catch(() => {});
   }, [refresh]);
 
@@ -76,8 +66,8 @@ export function HomeStats({
   const [stats, setStats] = useState<Stats | null>(null);
 
   useEffect(() => {
-    fetch("/api/stats")
-      .then((r) => r.json())
+    api
+      .stats()
       .then(setStats)
       .catch(() => {});
   }, []);
@@ -284,7 +274,7 @@ export function ProfilePage() {
         />
       ) : (
         <h2 className="pf-name" title={since ? `studying since ${since}` : undefined}>
-          {p.name}
+          {p.name || <span className="pf-name-empty">your name</span>}
           <button
             onClick={() => {
               setDraft(p.name);
@@ -324,6 +314,7 @@ export function ProfilePage() {
         </span>
         <b>{learningN}</b> learning
       </p>
+      <Account />
       {error && <p className="me-error hand">{error}</p>}
     </section>
   );

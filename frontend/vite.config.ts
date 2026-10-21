@@ -4,10 +4,5 @@ import { defineConfig } from "vite";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
-  server: {
-    proxy: {
-      // in docker the backend is reachable by service name
-      "/api": process.env.DOCKER ? "http://backend:8000" : "http://localhost:8000",
-    },
-  },
+  // /api/* is served by the Netlify functions (netlify dev runs them locally)
 });

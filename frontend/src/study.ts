@@ -1,0 +1,89 @@
+/** The copy-prompt study flow: the app builds a prompt from a note, you paste
+ *  it into Claude yourself, then paste Claude's JSON reply back. No AI call
+ *  is made on this path. */
+
+import { dediac } from "./arabic";
+
+const HEAD = (title: string, numbered: string) =>
+  "You are helping an adult learner of Modern Standard Arabic understand a text.\n\n" +
+  `Text title: ${title}\n\n` +
+  `Sentences (numbered):\n${numbered}\n\n`;
+
+const SCHEMA =
+  "Return ONLY one valid JSON object (no prose, no markdown fences) with this exact shape:\n" +
+  "{\n" +
+  '  "sentences": [{"index": 0, "en": "natural English translation of sentence 0, in context"}],\n' +
+  '  "words": [{"lemma": "dictionary form, fully vocalized", ' +
+  '"pos": "noun | verb | particle | adjective | adverb | other", ' +
+  '"root": "root letters separated by spaces, or null", ' +
+  '"meaning": "short English meaning as used in THIS text (1-4 words)"}]\n' +
+  "}\n\n" +
+  "Rules:\n" +
+  '- One entry in "sentences" for every numbered sentence, same index.\n' +
+  '- One entry in "words" for every content word (skip punctuation and numbers).\n' +
+  '- "meaning" is the sense used in this text, not every possible sense.\n' +
+  "- Give the root whenever you are confident; use null only when you are not.\n" +
+  "- Output the JSON object alone.\n";
+
+export function buildPrompt(title: string, sentences: string[]): string {
+  return HEAD(title, sentences.map((s, i) => `${i}. ${s}`).join("\n")) + SCHEMA;
+}
+
+export type AnalysisWord = { lemma: string; meaning: string; root: string | null; pos: string | null };
+export type ParsedAnalysis = { sentences: Record<string, string>; words: Record<string, AnalysisWord> };
+
+function extractJson(raw: string): unknown {
+  const text = raw.trim();
+  try {
+    return JSON.parse(text);
+  } catch {
+    /* look for the object inside prose or fences */
+  }
+  const m = text.match(/\{[\s\S]*\}/);
+  if (!m) throw new Error("No JSON object found - paste the whole reply");
+  try {
+    return JSON.parse(m[0]);
+  } catch (e) {
+    throw new Error(`Invalid JSON: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/** Claude's reply, pasted as is (fences and prose tolerated), checked and
+ *  reduced to what the reader uses. */
+export function parseAnalysis(raw: string): ParsedAnalysis {
+  const data = extractJson(raw);
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new Error("Expected a JSON object with 'sentences' and 'words'");
+  }
+  const d = data as { sentences?: unknown; words?: unknown };
+  const sents = d.sentences ?? [];
+  const words = d.words ?? [];
+  if (!Array.isArray(sents) || !Array.isArray(words)) throw new Error("'sentences' and 'words' must be arrays");
+
+  const sentences: Record<string, string> = {};
+  for (const s of sents) {
+    if (s && typeof s === "object" && Number.isInteger(s.index) && typeof s.en === "string" && s.en.trim()) {
+      sentences[String(s.index)] = s.en.trim();
+    }
+  }
+  const out: Record<string, AnalysisWord> = {};
+  for (const w of words) {
+    if (!w || typeof w !== "object") continue;
+    const { lemma, meaning, root, pos } = w as Record<string, unknown>;
+    if (typeof lemma !== "string" || !lemma.trim()) continue;
+    if (typeof meaning !== "string" || !meaning.trim()) continue;
+    const key = dediac(lemma).trim();
+    if (!key) continue;
+    const r = typeof root === "string" ? root.replace(/\./g, " ").split(/\s+/).filter(Boolean).join(" ") : "";
+    out[key] = {
+      lemma: lemma.trim(),
+      meaning: meaning.trim(),
+      root: r || null,
+      pos: typeof pos === "string" ? pos : null,
+    };
+  }
+  if (!Object.keys(sentences).length && !Object.keys(out).length) {
+    throw new Error("JSON had no usable 'sentences' or 'words' entries");
+  }
+  return { sentences, words: out };
+}

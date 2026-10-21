@@ -1,14 +1,23 @@
-# Netlify builds and hosts the frontend (frontend/). The Python backend
-# (FastAPI + CAMeL Tools) runs elsewhere; set its address as API_URL in
-# Netlify > Site configuration > Environment variables, and /api/* calls are
-# forwarded to it (see frontend/scripts/netlify-redirects.mjs).
+# Netlify builds and hosts everything: the app (frontend/) and the few server
+# functions that hold the Fanar key (frontend/netlify/functions, served at /api/*).
+# The data lives in Supabase. Set FANAR_API_KEY in Netlify > Site configuration >
+# Environment variables (and SUPABASE_SECRET_KEY to share caches and keep audio).
 [build]
   base = "frontend"
-  command = "npm run build && node scripts/netlify-redirects.mjs"
+  command = "npm run build"
   publish = "dist"
 
 [build.environment]
   NODE_VERSION = "22"
+
+[functions]
+  node_bundler = "esbuild"
+
+# a single page app: every other path is the app itself
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
 
 [[headers]]
   for = "/*"
