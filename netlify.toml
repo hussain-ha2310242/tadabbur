@@ -9,6 +9,9 @@
 
 [build.environment]
   NODE_VERSION = "22"
+  # the voice is a name ("Noor"), not a secret: it is in the code as one of the
+  # voices to choose from, so the secrets scan skips it
+  SECRETS_SCAN_OMIT_KEYS = "FANAR_TTS_VOICE"
 
 [functions]
   node_bundler = "esbuild"
