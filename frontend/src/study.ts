@@ -13,16 +13,21 @@ const SCHEMA =
   "Return ONLY one valid JSON object (no prose, no markdown fences) with this exact shape:\n" +
   "{\n" +
   '  "sentences": [{"index": 0, "en": "natural English translation of sentence 0, in context"}],\n' +
-  '  "words": [{"lemma": "dictionary form, fully vocalized", ' +
+  '  "words": [{"form": "the word exactly as written in the text", ' +
+  '"lemma": "dictionary form, fully vocalized", ' +
   '"pos": "noun | verb | particle | adjective | adverb | other", ' +
   '"root": "root letters separated by spaces, or null", ' +
   '"meaning": "short English meaning as used in THIS text (1-4 words)"}]\n' +
   "}\n\n" +
   "Rules:\n" +
   '- One entry in "sentences" for every numbered sentence, same index.\n' +
-  '- One entry in "words" for every content word (skip punctuation and numbers).\n' +
+  '- One entry in "words" for every distinct word form in the text (skip punctuation and numbers).\n' +
+  '- "form" is copied character for character from the text, with every attached letter and pronoun ' +
+  "(e.g. والسيارة, بسهولة, كتبوها); forms of the same lemma get separate entries.\n" +
+  '- "lemma" is the bare dictionary form: no ال, no attached prepositions, conjunctions or pronouns; ' +
+  "verbs in the past tense, 3rd person masculine singular; nouns and adjectives singular.\n" +
   '- "meaning" is the sense used in this text, not every possible sense.\n' +
-  "- Give the root whenever you are confident; use null only when you are not.\n" +
+  '- "root" has the 3 (or 4) root letters only. Give it whenever you are confident; use null only when you are not.\n' +
   "- Output the JSON object alone.\n";
 
 export function buildPrompt(title: string, sentences: string[]): string {
@@ -30,7 +35,12 @@ export function buildPrompt(title: string, sentences: string[]): string {
 }
 
 export type AnalysisWord = { lemma: string; meaning: string; root: string | null; pos: string | null };
-export type ParsedAnalysis = { sentences: Record<string, string>; words: Record<string, AnalysisWord> };
+/** forms: a written word (normalised) -> the key of its entry in words */
+export type ParsedAnalysis = {
+  sentences: Record<string, string>;
+  words: Record<string, AnalysisWord>;
+  forms?: Record<string, string>;
+};
 
 function extractJson(raw: string): unknown {
   const text = raw.trim();
@@ -67,9 +77,10 @@ export function parseAnalysis(raw: string): ParsedAnalysis {
     }
   }
   const out: Record<string, AnalysisWord> = {};
+  const forms: Record<string, string> = {};
   for (const w of words) {
     if (!w || typeof w !== "object") continue;
-    const { lemma, meaning, root, pos } = w as Record<string, unknown>;
+    const { form, lemma, meaning, root, pos } = w as Record<string, unknown>;
     if (typeof lemma !== "string" || !lemma.trim()) continue;
     if (typeof meaning !== "string" || !meaning.trim()) continue;
     const key = dediac(lemma).trim();
@@ -81,9 +92,49 @@ export function parseAnalysis(raw: string): ParsedAnalysis {
       root: r || null,
       pos: typeof pos === "string" ? pos : null,
     };
+    if (typeof form === "string" && normal(form)) forms[normal(form)] = key;
   }
   if (!Object.keys(sentences).length && !Object.keys(out).length) {
     throw new Error("JSON had no usable 'sentences' or 'words' entries");
   }
-  return { sentences, words: out };
+  return { sentences, words: out, forms };
+}
+
+/** Diacritics off, and the hamza seats and alif maqsura that writers mix up made one. */
+export const normal = (s: string) =>
+  dediac(s)
+    .replace(/[أإآٱ]/g, "ا")
+    .replace(/ى/g, "ي")
+    .trim();
+
+// letters that attach to the front of a word, longest first
+const PREFIXES = ["وبال", "وال", "فال", "بال", "كال", "لل", "ال", "و", "ف", "ب", "ل", "ك", "س"];
+
+const indexes = new WeakMap<object, Map<string, string>>();
+
+/** The entry of `words` for a word in the text: by its lemma, by the form Claude
+ *  was asked to copy, or by the word with its attached letters taken off
+ *  (replies pasted before forms were asked for). Null when nothing fits. */
+export function analysisKey(
+  a: Pick<ParsedAnalysis, "words" | "forms"> | null | undefined,
+  t: { lemma_key: string; word: string },
+): string | null {
+  if (!a?.words) return null;
+  if (a.words[t.lemma_key]) return t.lemma_key;
+  let index = indexes.get(a.words);
+  if (!index) {
+    index = new Map(Object.keys(a.words).map((k) => [normal(k), k]));
+    indexes.set(a.words, index);
+  }
+  const w = normal(t.word);
+  const viaForm = a.forms?.[w];
+  if (viaForm && a.words[viaForm]) return viaForm;
+  if (index.has(w)) return index.get(w)!;
+  for (const p of PREFIXES) {
+    if (w.startsWith(p) && w.length - p.length >= 2) {
+      const hit = index.get(w.slice(p.length));
+      if (hit) return hit;
+    }
+  }
+  return null;
 }

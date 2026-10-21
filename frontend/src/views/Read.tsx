@@ -4,6 +4,7 @@ import { HomeStats } from "./Profile";
 import { CorkBoard } from "./Board";
 import { api, Sentence, Tag, TextDetail, TextSummary, Token, WordInfo } from "../api";
 import type { Annotation } from "../api";
+import { analysisKey } from "../study";
 import { cleanGloss } from "../gloss";
 import { Icon } from "../icons";
 import { StatusSlider } from "../StatusSlider";
@@ -745,6 +746,7 @@ function ReadingView({
   const audioRef = useRef<HTMLAudioElement>(null);
   const [playing, setPlaying] = useState<number | null>(null);
   const [showStudy, setShowStudy] = useState(openStudy);
+  const [studyFocus, setStudyFocus] = useState(0); // bumped to put the cursor in the reply box
   // on a narrow screen the one-sentence view is the default, and it takes over
   // when the window is made narrower; the toggle still works either way
   // the breakpoint is shared with the stylesheet (index.css, the .bento rules)
@@ -780,7 +782,8 @@ function ReadingView({
   const analysisWords = text.analysis?.words ?? {};
   const viewToken = (t: Token): Token => {
     const ov = text.overrides?.[t.lemma_key];
-    const a = analysisWords[t.lemma_key];
+    const key = analysisKey(text.analysis, t);
+    const a = key ? analysisWords[key] : undefined;
     return {
       ...t,
       gloss: ov?.gloss ?? a?.meaning ?? t.gloss,
@@ -1169,7 +1172,45 @@ function ReadingView({
               }
             },
           },
-          { label: "Study data (Claude)", onClick: () => setShowStudy((x) => !x) },
+          {
+            label: "Re-extract words (Fanar)",
+            onClick: async () => {
+              if (
+                !window.confirm(
+                  "Analyse this note's words again with Fanar?\n\nEach word gets its dictionary form, root and meaning again. Levels you set stay with the words.",
+                )
+              )
+                return;
+              flash("re-extracting the words…");
+              try {
+                const r = await api.reanalyze(text.id);
+                onChange(await api.getText(text.id));
+                flash(`${r.words} words extracted${r.moved ? `, ${r.moved} levels carried over` : ""}`);
+              } catch (e) {
+                setError(String(e));
+              }
+            },
+          },
+          {
+            label: "Copy prompt for Claude",
+            onClick: async () => {
+              try {
+                const { prompt } = await api.getPrompt(text.id);
+                await navigator.clipboard.writeText(prompt);
+                flash("prompt copied - paste it into Claude, then paste the reply here");
+              } catch (e) {
+                setError(String(e));
+              }
+              setShowStudy(true);
+            },
+          },
+          {
+            label: "Paste Claude's reply",
+            onClick: () => {
+              setShowStudy(true);
+              setStudyFocus((n) => n + 1);
+            },
+          },
           { label: "Shortcuts (?)", onClick: () => setShowHelp((h) => !h) },
           {
             label: "Delete note",
@@ -1200,7 +1241,9 @@ function ReadingView({
         </p>
       )}
 
-      {showStudy && <StudyPanel text={text} onChange={onChange} flash={flash} />}
+      {showStudy && (
+        <StudyPanel text={text} onChange={onChange} flash={flash} focusKey={studyFocus} onClose={() => setShowStudy(false)} />
+      )}
 
       {showHelp && (
         <div
@@ -1308,7 +1351,7 @@ function ReadingView({
                 source={
                   text.overrides?.[current.lemma_key]
                     ? "edited"
-                    : text.analysis?.words?.[current.lemma_key]
+                    : analysisKey(text.analysis, current)
                       ? "claude"
                       : "auto"
                 }
@@ -1907,12 +1950,22 @@ function StudyPanel({
   text,
   onChange,
   flash,
+  focusKey,
+  onClose,
 }: {
   text: TextDetail;
   onChange: (t: TextDetail) => void;
   flash: (m: string) => void;
+  focusKey: number;
+  onClose: () => void;
 }) {
   const [raw, setRaw] = useState("");
+  const boxRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (!focusKey) return;
+    boxRef.current?.focus();
+    boxRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [focusKey]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const a = text.analysis;
@@ -1956,8 +2009,13 @@ function StudyPanel({
 
   return (
     <div className="frame mt-4 rounded-sm p-5" style={{ fontFamily: "var(--font-latin)" }}>
-      <div className="lbl" style={{ color: "var(--muted)" }}>
-        Study data · Claude
+      <div className="flex items-center justify-between">
+        <div className="lbl" style={{ color: "var(--muted)" }}>
+          Study data · Claude
+        </div>
+        <button onClick={onClose} className="icon-btn sm" aria-label="Close" title="Close">
+          <Icon name="close" size={12} />
+        </button>
       </div>
       <p className="mt-2 text-sm" style={{ color: "var(--muted)" }}>
         {a
@@ -1979,7 +2037,9 @@ function StudyPanel({
         )}
       </div>
       <textarea
+        ref={boxRef}
         dir="ltr"
+        onKeyDown={(e) => e.stopPropagation()}
         value={raw}
         onChange={(e) => setRaw(e.target.value)}
         placeholder="Paste Claude's JSON reply here…"

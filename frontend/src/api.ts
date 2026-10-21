@@ -4,8 +4,8 @@
 
 import { createEmptyCard, fsrs, Rating, type Card, type Grade, type State } from "ts-fsrs";
 import { supabase } from "./supabase";
-import { dediac, splitSentences, tokenize, type Sentence, type Token } from "./arabic";
-import { buildPrompt, parseAnalysis } from "./study";
+import { dediac, isWord, splitSentences, tokenize, wordKeys, type Sentence, type Token } from "./arabic";
+import { analysisKey, buildPrompt, parseAnalysis } from "./study";
 
 export type { Sentence, Token };
 
@@ -32,6 +32,7 @@ export type TextSummary = {
 export type Analysis = {
   sentences: Record<string, string>; // sentence index -> English
   words: Record<string, { lemma: string; meaning: string; root: string | null; pos: string | null }>;
+  forms?: Record<string, string>; // a written word (normalised) -> its key in words
 };
 
 export type TextDetail = {
@@ -477,6 +478,49 @@ const calls = {
     return { id: row.id, sentences: sentences.length };
   },
 
+  /** Analyse a saved note's words again with Fanar. Levels you set on a word
+   *  that was keyed by its written form (a note saved with Claude's reply)
+   *  move to its dictionary form, unless that form is already in your wallet. */
+  reanalyze: async (id: number): Promise<{ words: number; moved: number }> => {
+    const t = must(await supabase.from("texts").select("body, tokens_json").eq("id", id).maybeSingle()) as {
+      body: string;
+      tokens_json: Sentence[];
+    } | null;
+    if (!t) throw new Error("404: text not found");
+    const fresh = await analyseText(t.body, true);
+    const moves = new Map<string, string>();
+    t.tokens_json.forEach((s, si) =>
+      s.tokens.forEach((old, ti) => {
+        const now = fresh[si]?.tokens[ti];
+        if (now && old.pos === null && now.word === old.word && isWord(now) && now.lemma_key !== old.lemma_key) {
+          moves.set(old.lemma_key, now.lemma_key);
+        }
+      }),
+    );
+    let moved = 0;
+    if (moves.size) {
+      const keys = [...new Set([...moves.keys(), ...moves.values()])];
+      const have = new Set<string>();
+      for (let i = 0; i < keys.length; i += 80) {
+        const rows = must(await supabase.from("words").select("lemma_key").in("lemma_key", keys.slice(i, i + 80))) as {
+          lemma_key: string;
+        }[];
+        for (const r of rows ?? []) have.add(r.lemma_key);
+      }
+      const todo = [...moves].filter(([from, to]) => have.has(from) && !have.has(to));
+      for (let i = 0; i < todo.length; i += 10) {
+        await Promise.all(
+          todo.slice(i, i + 10).map(async ([from, to]) => {
+            const { error } = await supabase.from("words").update({ lemma_key: to }).eq("lemma_key", from);
+            if (!error) moved++;
+          }),
+        );
+      }
+    }
+    must(await supabase.from("texts").update({ tokens_json: fresh }).eq("id", id));
+    return { words: wordKeys(fresh).size, moved };
+  },
+
   setTextTitle: async (id: number, title: string) => {
     const t = clean(title, 200);
     if (!t) throw new Error("the title cannot be empty");
@@ -774,6 +818,26 @@ const calls = {
   importAnalysis: async (id: number, raw: string) => {
     const analysis = parseAnalysis(raw);
     must(await supabase.from("note_analysis").upsert({ text_id: id, analysis_json: analysis }));
+    // words the app has not analysed (a note saved with Claude's reply) take
+    // Claude's lemma, root and meaning, so the wallet keys them by dictionary form
+    const t = must(await supabase.from("texts").select("tokens_json").eq("id", id).maybeSingle()) as {
+      tokens_json: Sentence[];
+    } | null;
+    if (t) {
+      let changed = 0;
+      const sentences = t.tokens_json.map((s) => ({
+        ...s,
+        tokens: s.tokens.map((tok): Token => {
+          if (tok.pos !== null) return tok;
+          const key = analysisKey(analysis, tok);
+          const w = key ? analysis.words[key] : undefined;
+          if (!key || !w) return tok;
+          changed++;
+          return { ...tok, lemma: w.lemma, lemma_key: key, root: w.root, pos: w.pos ?? "other", gloss: w.meaning };
+        }),
+      }));
+      if (changed) must(await supabase.from("texts").update({ tokens_json: sentences }).eq("id", id));
+    }
     // fill in roots for wallet words that have none yet (never overwrite)
     const rootless = await all<{ lemma_key: string }>((a, b) =>
       supabase.from("words").select("lemma_key").is("root", null).range(a, b),

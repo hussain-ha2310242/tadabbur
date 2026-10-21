@@ -81,18 +81,18 @@ export default function App() {
           </filter>
         </defs>
       </svg>
-      <main className="sheet paper relative mx-auto my-8 min-h-[calc(100vh-4rem)] max-w-[min(72rem,calc(100vw-28px))] px-6 pb-24 pt-6 sm:px-10" dir="ltr">
+      <main className="sheet paper relative mx-auto my-2 min-h-[calc(100vh-1rem)] max-w-[min(72rem,calc(100vw-16px))] px-4 pb-24 pt-2 sm:my-8 sm:min-h-[calc(100vh-4rem)] sm:max-w-[min(72rem,calc(100vw-28px))] sm:px-10 sm:pt-6" dir="ltr">
         <PaperSheet />
         <ProfileChip onOpen={() => setView("profile")} refresh={view} />
         {/* the top row never changes: the name in the middle goes home, between two fading rules */}
-        <div className="flex min-h-[3.5rem] items-center gap-5">
+        <div className="brand-row flex min-h-[3.5rem] items-center gap-5">
           <Kashida side="left" />
           <button
             onClick={() => {
               setView("library");
               setHomeKey((k) => k + 1);
             }}
-            className="brand ar flex-none text-center text-4xl"
+            className="brand ar flex-none text-center text-3xl sm:text-4xl"
             aria-label="Tadabbur, go home"
             title="Home"
             style={{ fontWeight: 400, lineHeight: 1.2, fontFamily: "'Rakkas', var(--font-ar)", color: "var(--fg)" }}
@@ -102,7 +102,7 @@ export default function App() {
           <Kashida side="right" />
         </div>
 
-        <div className="mt-8">
+        <div className="mt-3 sm:mt-8">
           {view === "library" && (
             <Library
               key={homeKey}

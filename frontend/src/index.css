@@ -2958,3 +2958,93 @@ h2.note-title::before {
   font-weight: 400;
   opacity: 0.6;
 }
+
+/* ---- a phone: what sits above the sentence kept short ---- */
+@media (max-width: 640px) {
+  /* the name in the middle and you at the right, on one line */
+  .brand-row {
+    min-height: 2.75rem;
+    justify-content: center;
+  }
+  .brand-row .kashida {
+    display: none;
+  }
+  .me-corner {
+    top: 0.95rem;
+    right: 0.9rem;
+  }
+  /* the reader: the title, then progress and tools on one row, then the word */
+  .bento {
+    margin-top: 0.4rem;
+    gap: 0.5rem;
+  }
+  .bento .note-title {
+    font-size: calc(1.02rem * var(--ar-scale, 1));
+    line-height: 1.6;
+  }
+  .bento .wrap-word {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35rem 0.6rem;
+  }
+  .bento .wrap-word > * {
+    flex: 1 1 100%;
+  }
+  .bento .wrap-word > .note-track {
+    flex: 1 1 8rem;
+    margin: 0;
+    gap: 0.45rem;
+  }
+  .bento .wrap-word > .tile-tools {
+    flex: 0 0 auto;
+    width: auto;
+    margin: 0;
+    padding: 0;
+  }
+  .bento .tile-tools .rv-sep {
+    display: none;
+  }
+  /* the word card: the word and its meaning side by side, then the level and the note */
+  .bento .wp {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    column-gap: 0.75rem;
+    padding: 0.5rem 0.8rem 0.55rem;
+    transform: rotate(-0.3deg);
+  }
+  .bento .wp > * {
+    grid-column: 1 / -1;
+  }
+  .bento .wp > .wp-head {
+    grid-column: 1;
+  }
+  .bento .wp > .wp-meaning {
+    grid-column: 2;
+    margin: 0;
+  }
+  .bento .wp::before {
+    top: -6px;
+    width: 40px;
+    height: 12px;
+  }
+  .bento .wp-word {
+    font-size: 1.15rem;
+  }
+  .bento .wp .slider-wrap {
+    margin-top: 0.15rem;
+  }
+  .bento .wp-foot {
+    margin-top: 0.1rem;
+  }
+}
+@media (max-width: 640px) {
+  /* the narrower margin on a phone: the torn paper edge stays on screen */
+  .paper-svg {
+    top: -7px;
+    left: -7px;
+    width: calc(100% + 14px);
+    height: calc(100% + 14px);
+  }
+}
