@@ -1,0 +1,9 @@
+id: hal
+name_ar: الحال
+group: المنصوبات
+definition_ar: اسم منصوب يبين هيئة الفاعل أو المفعول به حين وقوع الفعل
+examples:
+  - ar: أَقْبَلَ المَظْلُومُ باكِيًا
+    target: باكِيًا
+confusions: [tamyiz, maful-liajlih]
+sources: [qu100, madina-b2-l19]

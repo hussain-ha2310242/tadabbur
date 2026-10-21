@@ -1,0 +1,24 @@
+# Netlify builds and hosts the frontend (frontend/). The Python backend
+# (FastAPI + CAMeL Tools) runs elsewhere; set its address as API_URL in
+# Netlify > Site configuration > Environment variables, and /api/* calls are
+# forwarded to it (see frontend/scripts/netlify-redirects.mjs).
+[build]
+  base = "frontend"
+  command = "npm run build && node scripts/netlify-redirects.mjs"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    X-Frame-Options = "DENY"
+
+# built files carry a content hash in their name, so they can be cached for good
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"

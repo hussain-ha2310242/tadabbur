@@ -1,0 +1,22 @@
+# secrets: real keys live only in .env (the example is committed)
+.env
+.env.*
+!.env.example
+
+# the database and cached audio
+data/*
+!data/.gitkeep
+content/sources/*.pdf
+
+# build output and dependencies
+node_modules/
+dist/
+__pycache__/
+*.pyc
+.netlify/
+
+# local copies made before edits, editor and OS files
+.backups/
+.claude/settings.local.json
+.fuse_hidden*
+.DS_Store
