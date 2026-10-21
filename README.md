@@ -22,9 +22,12 @@ key the browser never sees.
 - **Audio:** Fanar TTS, kept in private Supabase storage (one call per sentence).
 - **Review:** words, phrases and notes share one deck and one level scale
   (not known, hard, easy, known); the level you pick is the grade.
-- **You:** sign in with an email link (or start as a guest and add an email
-  later). A profile with a daily streak; any review, level change or new
-  note counts for the day.
+- **You:** invite only. Accounts are made in Supabase (*Authentication >
+  Users > Add user > Create new user*, with *Auto Confirm User* on) and
+  sign-ups are switched off, so no one can join from the site. You sign in
+  with email and password and can change the password on your profile. A
+  profile with a daily streak; any review, level change or new note counts
+  for the day.
 
 ## Layout
 

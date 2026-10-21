@@ -3,9 +3,9 @@ import type { Session, User } from "@supabase/supabase-js";
 import { supabase } from "./supabase";
 import { DeskSky } from "./DeskSky";
 
-const redirectTo = () => window.location.origin;
-
-/** The app once someone is signed in; before that, the sign-in sheet. */
+/** The app once someone is signed in; before that, the sign-in sheet.
+ *  Invite only: accounts are made in Supabase (Authentication > Users > Add user),
+ *  and sign-ups are switched off there, so there is no way to join from here. */
 export function AuthGate({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null | undefined>(undefined);
 
@@ -21,7 +21,31 @@ export function AuthGate({ children }: { children: ReactNode }) {
   return <div key={session.user.id}>{children}</div>;
 }
 
-function SignInSheet({ children }: { children: ReactNode }) {
+/** Supabase's messages, said plainly. */
+function plainError(message: string): string {
+  if (/invalid login credentials/i.test(message)) return "That email and password do not match.";
+  if (/email not confirmed/i.test(message)) return "This account is not confirmed yet. Confirm it in Supabase first.";
+  if (/rate limit/i.test(message)) return "Too many tries. Wait a few minutes, then try again.";
+  if (/should be at least/i.test(message)) return "The new password is too short.";
+  if (/should be different/i.test(message)) return "The new password must be different from the old one.";
+  return message;
+}
+
+function SignIn() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function signIn(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+    setBusy(false);
+    if (error) setError(plainError(error.message));
+  }
+
   return (
     <>
       <DeskSky />
@@ -29,85 +53,42 @@ function SignInSheet({ children }: { children: ReactNode }) {
         <h1 className="signin-brand ar">
           <span className="hl-under">تدبّر</span>
         </h1>
-        {children}
+        <form className="signin-form" onSubmit={signIn}>
+          <input
+            type="email"
+            required
+            autoFocus
+            autoComplete="username"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="email"
+            aria-label="Email"
+          />
+          <input
+            type="password"
+            required
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="password"
+            aria-label="Password"
+          />
+          <button type="submit" className="signin-go hand" disabled={busy || !email.trim() || !password}>
+            {busy ? "signing in…" : "sign in"}
+          </button>
+        </form>
+        {error && <p className="me-error hand">{error}</p>}
       </main>
     </>
   );
 }
 
-/** Email link sign-in (no password), or a guest account that can be kept later. */
-function SignIn() {
-  const [email, setEmail] = useState("");
-  const [sent, setSent] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function sendLink(e: FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setError(null);
-    const { error } = await supabase.auth.signInWithOtp({
-      email: email.trim(),
-      options: { emailRedirectTo: redirectTo() },
-    });
-    setBusy(false);
-    if (error) setError(error.message);
-    else setSent(true);
-  }
-
-  async function guest() {
-    setBusy(true);
-    setError(null);
-    const { error } = await supabase.auth.signInAnonymously();
-    setBusy(false);
-    if (error) {
-      setError(
-        /disabled/i.test(error.message)
-          ? "Guest accounts are off. Turn on anonymous sign-ins in Supabase (Authentication > Sign In / Providers), or use your email."
-          : error.message,
-      );
-    }
-  }
-
-  return (
-    <SignInSheet>
-      {sent ? (
-        <p className="signin-note hand">
-          A sign-in link is on its way to <b>{email.trim()}</b>. Open it on this device.
-        </p>
-      ) : (
-        <form className="signin-form" onSubmit={sendLink}>
-          <label className="hand" htmlFor="signin-email">
-            your email, for a sign-in link
-          </label>
-          <input
-            id="signin-email"
-            type="email"
-            required
-            autoFocus
-            autoComplete="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="you@example.com"
-          />
-          <button type="submit" className="signin-go hand" disabled={busy || !email.trim()}>
-            send the link
-          </button>
-          <button type="button" className="signin-guest hand" onClick={guest} disabled={busy}>
-            or start as a guest
-          </button>
-        </form>
-      )}
-      {error && <p className="me-error hand">{error}</p>}
-    </SignInSheet>
-  );
-}
-
-/** On the profile: who you are signed in as. A guest can keep their notes by
- *  adding an email; the account stays the same, so nothing moves. */
+/** On the profile: who you are signed in as, a new password, and signing out. */
 export function Account() {
   const [user, setUser] = useState<User | null>(null);
-  const [email, setEmail] = useState("");
+  const [changing, setChanging] = useState(false);
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -117,41 +98,74 @@ export function Account() {
 
   if (!user) return null;
 
-  async function keep(e: FormEvent) {
+  async function changePassword(e: FormEvent) {
     e.preventDefault();
+    if (!user?.email) return;
     setBusy(true);
-    const { error } = await supabase.auth.updateUser({ email: email.trim() }, { emailRedirectTo: redirectTo() });
+    setMsg(null);
+    // the current password is checked first, so an open laptop is not enough to change it
+    const check = await supabase.auth.signInWithPassword({ email: user.email, password: current });
+    if (check.error) {
+      setBusy(false);
+      setMsg("The current password is not right.");
+      return;
+    }
+    const { error } = await supabase.auth.updateUser({ password: next });
     setBusy(false);
-    setMsg(error ? error.message : `check ${email.trim()} to confirm; your notes stay as they are`);
+    if (error) {
+      setMsg(plainError(error.message));
+      return;
+    }
+    setCurrent("");
+    setNext("");
+    setChanging(false);
+    setMsg("password changed");
   }
 
   return (
     <div className="pf-account hand">
-      {user.is_anonymous ? (
-        <form onSubmit={keep} className="pf-keep">
-          <span>guest account: add an email to keep your notes</span>
+      <span>
+        {user.email}
+        <span className="pf-dot" aria-hidden="true">
+          ·
+        </span>
+        <button onClick={() => setChanging((c) => !c)} className="pf-signout" aria-expanded={changing}>
+          change password
+        </button>
+        <span className="pf-dot" aria-hidden="true">
+          ·
+        </span>
+        <button onClick={() => supabase.auth.signOut()} className="pf-signout">
+          sign out
+        </button>
+      </span>
+      {changing && (
+        <form onSubmit={changePassword} className="pf-keep">
+          <input type="email" value={user.email ?? ""} autoComplete="username" readOnly hidden />
           <input
-            type="email"
+            type="password"
             required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="you@example.com"
-            aria-label="Email to keep your notes"
+            autoFocus
+            autoComplete="current-password"
+            value={current}
+            onChange={(e) => setCurrent(e.target.value)}
+            placeholder="current password"
+            aria-label="Current password"
           />
-          <button type="submit" disabled={busy || !email.trim()}>
-            keep
+          <input
+            type="password"
+            required
+            minLength={8}
+            autoComplete="new-password"
+            value={next}
+            onChange={(e) => setNext(e.target.value)}
+            placeholder="new password (8+)"
+            aria-label="New password"
+          />
+          <button type="submit" disabled={busy || !current || next.length < 8}>
+            {busy ? "saving…" : "save"}
           </button>
         </form>
-      ) : (
-        <span>
-          {user.email}
-          <span className="pf-dot" aria-hidden="true">
-            ·
-          </span>
-          <button onClick={() => supabase.auth.signOut()} className="pf-signout">
-            sign out
-          </button>
-        </span>
       )}
       {msg && <p className="pf-account-msg">{msg}</p>}
     </div>

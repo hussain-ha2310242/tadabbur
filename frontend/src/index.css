@@ -2888,10 +2888,6 @@ h2.note-title::before {
   gap: 0.6rem;
   width: 100%;
 }
-.signin-form label {
-  color: var(--muted);
-  font-size: var(--ui-size);
-}
 .signin-form input,
 .pf-keep input {
   border: 0;
@@ -2920,11 +2916,9 @@ h2.note-title::before {
   transform: translateY(-1px);
 }
 .signin-go:disabled,
-.signin-guest:disabled,
 .pf-keep button:disabled {
   opacity: 0.5;
 }
-.signin-guest,
 .pf-signout,
 .pf-keep button {
   color: var(--muted);
@@ -2932,26 +2926,17 @@ h2.note-title::before {
   text-decoration: underline dotted;
   text-underline-offset: 3px;
 }
-.signin-guest:hover,
 .pf-signout:hover,
 .pf-keep button:hover:not(:disabled) {
   color: var(--ink-red);
 }
-.signin-note {
-  margin: 0;
-  color: var(--muted);
-  line-height: 1.6;
-}
-.signin-note code {
-  font-size: 0.8em;
-}
-
 /* ---- the account line on the profile ---- */
 .pf-account {
   color: var(--muted);
   font-size: calc(var(--ui-size) * 0.92);
 }
 .pf-keep {
+  margin-top: 0.7rem;
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
