@@ -6,31 +6,9 @@ import Words from "./views/Words";
 import { ProfileChip, ProfilePage } from "./views/Profile";
 import { applyCardStyle, applyTextScale, applyTheme } from "./theme";
 import { DeskSky } from "./DeskSky";
+import { PaperDefs, PaperSheet } from "./Paper";
 
 type View = "library" | "review" | "profile" | "words";
-
-/** The sheet as a manuscript page: an aged SVG paper with faint margin rules.
- *  The filter gives it a rough, hand-torn edge. Decoration only. */
-function PaperSheet() {
-  return (
-    <svg className="paper-svg" aria-hidden="true" viewBox="0 0 1000 1000" preserveAspectRatio="none">
-      <defs>
-        <filter id="paper-grain" x="0" y="0" width="100%" height="100%">
-          <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="3" seed="2" />
-          <feColorMatrix type="matrix" values="0 0 0 0 0.42  0 0 0 0 0.30  0 0 0 0 0.16  0.7 0 0 0 -0.32" />
-        </filter>
-        <radialGradient id="paper-age" cx="50%" cy="46%" r="72%">
-          <stop offset="55%" stopColor="rgb(120 80 40)" stopOpacity="0" />
-          <stop offset="100%" stopColor="rgb(120 80 40)" stopOpacity="0.2" />
-        </radialGradient>
-      </defs>
-      <rect x="0" y="0" width="1000" height="1000" style={{ fill: "var(--bg)" }} />
-      <rect className="paper-age" x="0" y="0" width="1000" height="1000" fill="url(#paper-age)" />
-      {/* texture: a fine grain */}
-      <rect x="0" y="0" width="1000" height="1000" filter="url(#paper-grain)" />
-    </svg>
-  );
-}
 
 /** A kashida: the calligrapher's stretched stroke. Thick where it meets the name,
  *  tapering out toward the edge, and ending in a nuqta (the dot) by the name. */
@@ -72,15 +50,7 @@ export default function App() {
   return (
     <>
       <DeskSky />
-      {/* a shared filter that roughens the paper's edge */}
-      <svg width="0" height="0" className="absolute" aria-hidden="true">
-        <defs>
-          <filter id="deckle" x="-3%" y="-3%" width="106%" height="106%">
-            <feTurbulence type="fractalNoise" baseFrequency="0.035" numOctaves="3" seed="7" result="noise" />
-            <feDisplacementMap in="SourceGraphic" in2="noise" scale="9" xChannelSelector="R" yChannelSelector="G" />
-          </filter>
-        </defs>
-      </svg>
+      <PaperDefs />
       <main className="sheet paper relative mx-auto my-2 min-h-[calc(100vh-1rem)] max-w-[min(72rem,calc(100vw-16px))] px-4 pb-24 pt-2 sm:my-8 sm:min-h-[calc(100vh-4rem)] sm:max-w-[min(72rem,calc(100vw-28px))] sm:px-10 sm:pt-6" dir="ltr">
         <PaperSheet />
         <ProfileChip onOpen={() => setView("profile")} refresh={view} />

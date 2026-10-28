@@ -1,11 +1,10 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import type { Session, User } from "@supabase/supabase-js";
 import { supabase } from "./supabase";
-import { DeskSky } from "./DeskSky";
+import { Landing, plainAuthError } from "./Landing";
 
-/** The app once someone is signed in; before that, the sign-in sheet.
- *  Invite only: accounts are made in Supabase (Authentication > Users > Add user),
- *  and sign-ups are switched off there, so there is no way to join from here. */
+/** The app once someone is signed in; before that, the landing page with
+ *  sign up and sign in (email and password). */
 export function AuthGate({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null | undefined>(undefined);
 
@@ -16,71 +15,9 @@ export function AuthGate({ children }: { children: ReactNode }) {
   }, []);
 
   if (session === undefined) return null;
-  if (!session) return <SignIn />;
+  if (!session) return <Landing />;
   // a new key per person, so nothing from one account shows in another
   return <div key={session.user.id}>{children}</div>;
-}
-
-/** Supabase's messages, said plainly. */
-function plainError(message: string): string {
-  if (/invalid login credentials/i.test(message)) return "That email and password do not match.";
-  if (/email not confirmed/i.test(message)) return "This account is not confirmed yet. Confirm it in Supabase first.";
-  if (/rate limit/i.test(message)) return "Too many tries. Wait a few minutes, then try again.";
-  if (/should be at least/i.test(message)) return "The new password is too short.";
-  if (/should be different/i.test(message)) return "The new password must be different from the old one.";
-  return message;
-}
-
-function SignIn() {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function signIn(e: FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setError(null);
-    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
-    setBusy(false);
-    if (error) setError(plainError(error.message));
-  }
-
-  return (
-    <>
-      <DeskSky />
-      <main className="signin" dir="ltr">
-        <h1 className="signin-brand ar">
-          <span className="hl-under">تدبّر</span>
-        </h1>
-        <form className="signin-form" onSubmit={signIn}>
-          <input
-            type="email"
-            required
-            autoFocus
-            autoComplete="username"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="email"
-            aria-label="Email"
-          />
-          <input
-            type="password"
-            required
-            autoComplete="current-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="password"
-            aria-label="Password"
-          />
-          <button type="submit" className="signin-go hand" disabled={busy || !email.trim() || !password}>
-            {busy ? "signing in…" : "sign in"}
-          </button>
-        </form>
-        {error && <p className="me-error hand">{error}</p>}
-      </main>
-    </>
-  );
 }
 
 /** On the profile: who you are signed in as, a new password, and signing out. */
@@ -113,7 +50,7 @@ export function Account() {
     const { error } = await supabase.auth.updateUser({ password: next });
     setBusy(false);
     if (error) {
-      setMsg(plainError(error.message));
+      setMsg(plainAuthError(error.message));
       return;
     }
     setCurrent("");

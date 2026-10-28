@@ -1,44 +1,30 @@
 # Tadabbur (تدبّر)
 
-A personal Arabic reading and vocabulary app. Paste an article, read it one
-word or one sentence at a time, mark how well you know each word, save
-phrases and notes on any run of words, and review them all as flashcards on
-a spaced-repetition schedule (FSRS).
+**Read Arabic slowly, and keep every word you learn.**
 
-It is one Netlify site and one Supabase project: the app talks to Supabase
-directly for your data, and a few small Netlify functions call Fanar with a
-key the browser never sees.
+Try it: **[tadabburi.netlify.app](https://tadabburi.netlify.app)** (free, sign up with an email and password)
 
-## What does what
+![Tadabbur: tap a word, mark it, keep a phrase, review it](docs/tadabbur.gif)
 
-- **Reading:** when a note is saved, its text is split into sentences and
-  words in the browser, and Fanar analyses each word once (lemma, root, part
-  of speech, meaning). The analysis of a written word is kept and shared, so
-  it is paid for once. Fanar also gives the sentence translations and the
-  meaning of any phrase you select.
-- **Study data from Claude:** instead of an API call, a note can carry a
-  prompt you paste into Claude; its JSON reply is imported as sentence
-  translations and word meanings in context.
-- **Audio:** Fanar TTS, kept in private Supabase storage (one call per sentence).
-- **Review:** words, phrases and notes share one deck and one level scale
-  (not known, hard, easy, known); the level you pick is the grade.
-- **You:** invite only. Accounts are made in Supabase (*Authentication >
-  Users > Add user > Create new user*, with *Auto Confirm User* on) and
-  sign-ups are switched off, so no one can join from the site. You sign in
-  with email and password and can change the password on your profile. A
-  profile with a daily streak; any review, level change or new note counts
-  for the day.
+[Watch the video in full quality](docs/tadabbur.mp4)
 
-## Layout
+## What you can do
 
-- `frontend/` - Vite + React + TypeScript + Tailwind. A paper sheet on a
-  desk; Rakkas for the name, Playpen Sans (Arabic and Latin) for text.
-  - `src/api.ts` - every read and write, on `@supabase/supabase-js`;
-    scheduling with `ts-fsrs`.
-  - `src/arabic.ts` - sentences and tokens; `src/study.ts` - the Claude prompt.
-  - `netlify/functions/` - `analyze`, `translate`, `enrich`, `tts` at `/api/*`.
-    Each checks the caller's Supabase session first.
-- `supabase/schema.sql` - the database: tables, row level security (each
-  person sees only their own rows), and the few SQL functions the app calls.
-- `content/` - authored source material (see `content/README.md`).
-- `netlify.toml` - build settings; `.env.example` - the server-side settings.
+- **Tap any word.** Paste an Arabic article and every word shows its meaning, its dictionary form and its root. Each sentence has an English translation and can be read aloud.
+- **Mark what you know.** Four levels, from *not known* to *known*. Your words collect in a wallet you can search in Arabic (with or without vowels), in English, or by root.
+- **Keep phrases and notes.** Drag across any run of words to save it as a phrase, with its meaning and your own note. It stays underlined in the text.
+- **Review a little each day.** Words and phrases come back as flashcards when they are due, and a daily streak keeps you going.
+- **Read your way.** One sentence at a time or the whole text, with larger or smaller Arabic, on a computer or a phone.
+
+## How to start
+
+1. Open [tadabburi.netlify.app](https://tadabburi.netlify.app) and sign up.
+2. Press **+**, paste an article (its title on the first line), and save.
+3. Read: tap a word, set its level, drag across words to keep a phrase.
+4. Open the **deck** each day to review.
+
+## Made with AI
+
+Tadabbur was built by Hussain with **Claude** (Anthropic) used heavily throughout: planning the features, designing the pages, writing most of the code, testing it in a browser, making the product video and writing this README. Hussain decided what to build and steered every step.
+
+Inside the app, **[Fanar](https://fanar.qa)** (Qatar's Arabic AI) gives the word meanings, roots, translations and audio. For any text you can also copy a ready-made prompt into Claude and paste its answer back, for translations and meanings read in context.
