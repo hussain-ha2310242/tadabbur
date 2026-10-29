@@ -2,12 +2,15 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import { AuthGate } from "./Auth";
+import { ErrorBoundary } from "./ErrorBoundary";
 import "./index.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <AuthGate>
-      <App />
-    </AuthGate>
+    <ErrorBoundary>
+      <AuthGate>
+        <App />
+      </AuthGate>
+    </ErrorBoundary>
   </React.StrictMode>,
 );

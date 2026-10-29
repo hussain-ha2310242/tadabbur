@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { supabase } from "./supabase";
+import { authSettings, supabase, type AuthSettings } from "./supabase";
+import { startDemo } from "./demo";
 import { DeskSky } from "./DeskSky";
 import { PaperDefs, PaperSheet } from "./Paper";
 
@@ -157,9 +158,19 @@ const FEATURES: { title: string; text: string; demo: ReactNode }[] = [
   },
 ];
 
-/** What a visitor sees before signing in: the idea, the features, and the way in. */
+/** What a visitor sees before signing in: the idea, the features, a demo
+ *  to try without an account, and the way in. */
 export function Landing() {
-  const [mode, setMode] = useState<"signup" | "signin" | null>(null);
+  // #signup or #signin opens the form straight away (the demo's "sign up" link)
+  const initial = window.location.hash.replace("#", "");
+  const [mode, setMode] = useState<"signup" | "signin" | null>(
+    initial === "signup" || initial === "signin" ? initial : null,
+  );
+  const [ways, setWays] = useState<AuthSettings | null>(null);
+  useEffect(() => {
+    authSettings().then(setWays);
+    if (initial) history.replaceState(null, "", window.location.pathname);
+  }, [initial]);
 
   return (
     <>
@@ -173,17 +184,23 @@ export function Landing() {
           </h1>
           <p className="lp-tag">Read Arabic slowly, and keep every word you learn.</p>
           {mode ? (
-            <AuthForm mode={mode} onMode={setMode} />
+            <AuthPanel mode={mode} onMode={setMode} ways={ways} />
           ) : (
             <div className="lp-cta">
-              <button className="lp-go hand" onClick={() => setMode("signup")}>
-                sign up, it's free
+              <button className="lp-go hand" onClick={startDemo}>
+                try it now
               </button>
+              {ways?.signup !== false && (
+                <button className="lp-ghost hand" onClick={() => setMode("signup")}>
+                  sign up, it's free
+                </button>
+              )}
               <button className="lp-link hand" onClick={() => setMode("signin")}>
                 sign in
               </button>
             </div>
           )}
+          {!mode && <p className="lp-note hand">no account needed to try: one sample article, a short tour</p>}
         </header>
 
         <section className="lp-features" aria-label="Features">
@@ -197,8 +214,8 @@ export function Landing() {
         </section>
 
         <footer className="lp-foot hand">
-          <button className="lp-link" onClick={() => setMode("signup")}>
-            start reading
+          <button className="lp-link" onClick={startDemo}>
+            try it now
           </button>
           <span aria-hidden="true">·</span>
           <a className="lp-link" href={REPO} target="_blank" rel="noreferrer">
@@ -209,6 +226,74 @@ export function Landing() {
         </footer>
       </main>
     </>
+  );
+}
+
+function GoogleMark() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
+      <path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9.1 3.6l6.8-6.8C35.8 2.4 30.3 0 24 0 14.6 0 6.6 5.4 2.7 13.2l7.9 6.2C12.5 13.6 17.8 9.5 24 9.5z" />
+      <path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.7c-.6 3-2.3 5.5-4.8 7.2l7.7 6c4.5-4.2 6.9-10.3 6.9-17.7z" />
+      <path fill="#FBBC05" d="M10.6 28.6c-.5-1.4-.8-3-.8-4.6s.3-3.2.8-4.6l-7.9-6.2C1 16.6 0 20.2 0 24s1 7.4 2.7 10.8l7.9-6.2z" />
+      <path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.7-6c-2.2 1.5-5 2.3-8.2 2.3-6.2 0-11.5-4.1-13.4-9.8l-7.9 6.2C6.6 42.6 14.6 48 24 48z" />
+    </svg>
+  );
+}
+
+/** Google first; email and password underneath, for a new account or an existing one. */
+function AuthPanel({
+  mode,
+  onMode,
+  ways,
+}: {
+  mode: "signup" | "signin";
+  onMode: (m: "signup" | "signin") => void;
+  ways: AuthSettings | null;
+}) {
+  const [error, setError] = useState<string | null>(null);
+  const [withEmail, setWithEmail] = useState(false);
+  const google = ways?.google !== false;
+  const email = ways?.email !== false;
+  const signupClosed = mode === "signup" && ways?.signup === false;
+
+  async function continueWithGoogle() {
+    setError(null);
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo: window.location.origin },
+    });
+    if (error) setError(plainAuthError(error.message));
+  }
+
+  if (signupClosed) {
+    return (
+      <div className="lp-auth">
+        <p className="lp-sent hand">Sign-ups are closed right now.</p>
+        <button className="lp-link hand" onClick={() => onMode("signin")}>
+          sign in instead
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="lp-auth">
+      {google && (
+        <button className="lp-google" onClick={continueWithGoogle}>
+          <GoogleMark />
+          Continue with Google
+        </button>
+      )}
+      {email &&
+        (google && !withEmail ? (
+          <button className="lp-link hand" onClick={() => setWithEmail(true)}>
+            {mode === "signup" ? "or sign up with email" : "or sign in with email"}
+          </button>
+        ) : (
+          <AuthForm mode={mode} onMode={onMode} />
+        ))}
+      {error && <p className="me-error hand">{error}</p>}
+    </div>
   );
 }
 

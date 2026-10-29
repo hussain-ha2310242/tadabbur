@@ -239,6 +239,12 @@ const saveCard = (c: Card) => ({
   last_review: c.last_review ? c.last_review.toISOString() : null,
 });
 
+/** A card after a review at the given level. */
+function nextCard(cardJson: unknown, status: string) {
+  const { card } = scheduler.next(loadCard(cardJson), new Date(), RATING[status]);
+  return { card_json: saveCard(card), due: card.due.toISOString() };
+}
+
 function newCard() {
   const card = createEmptyCard();
   return { card_json: saveCard(card), due: card.due.toISOString() };
@@ -950,8 +956,7 @@ const calls = {
 
   /** The level you press is the grade; a note's card is scheduled like a word's. */
   grade: async (lemmaKey: string, status: string) => {
-    const rating = RATING[status];
-    if (!rating) throw new Error(`status must be one of ${STATUSES.join(", ")}`);
+    if (!RATING[status]) throw new Error(`status must be one of ${STATUSES.join(", ")}`);
     const isNote = lemmaKey.startsWith(NOTE_PREFIX);
     const table = isNote ? "annotations" : "words";
     const col = isNote ? "id" : "lemma_key";
@@ -960,9 +965,8 @@ const calls = {
       card_json: unknown;
     } | null;
     if (!row) throw new Error(isNote ? "404: note not found" : "404: word not in wallet");
-    const { card } = scheduler.next(loadCard(row.card_json), new Date(), rating);
-    const due = card.due.toISOString();
-    must(await supabase.from(table).update({ status, card_json: saveCard(card), due }).eq(col, key));
+    const { card_json, due } = nextCard(row.card_json, status);
+    must(await supabase.from(table).update({ status, card_json, due }).eq(col, key));
     await logActivity("reviews");
     return { lemma_key: lemmaKey, status, due };
   },
@@ -1010,13 +1014,36 @@ const calls = {
   },
 };
 
-type Calls = typeof calls;
+export type Calls = typeof calls;
+
+let backend: Calls = calls;
+
+/** Send every call somewhere else (the try-it demo, all in memory), or back
+ *  to Supabase with null. */
+export function setBackend(b: Calls | null) {
+  backend = b ?? calls;
+  settingsCache = null;
+}
 
 /** Every call's result passes through plain(). */
 export const api = Object.fromEntries(
-  Object.entries(calls).map(([name, f]) => [
+  Object.keys(calls).map((name) => [
     name,
-    async (...args: unknown[]) => plain(await (f as (...a: unknown[]) => Promise<unknown>)(...args)),
+    async (...args: unknown[]) =>
+      plain(await (backend[name as keyof Calls] as (...a: unknown[]) => Promise<unknown>)(...args)),
   ]),
 ) as Calls;
 
+/** The pieces the demo reuses, so it schedules and counts exactly like the app. */
+export const shared = {
+  STATUSES,
+  NOTE_PREFIX,
+  HISTORY_DAYS,
+  SETTINGS_DEFAULTS,
+  newCard,
+  nextCard,
+  spanParts,
+  streakOf,
+  dayIn,
+  addDays,
+};

@@ -80,6 +80,7 @@ export default async (req: Request) => {
       const { data } = await c.cache.storage.from("tts").download(path);
       if (data) return wav(new Uint8Array(await data.arrayBuffer()));
     }
+    await c.quota("tts");
     const audio = joinWavs(await Promise.all(chunks(text).map((t) => fanarSpeech(t, voice, 9000))));
     if (c.cache) {
       await c.cache.storage.from("tts").upload(path, audio, { contentType: "audio/wav", upsert: true });

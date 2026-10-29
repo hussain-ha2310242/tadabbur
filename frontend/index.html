@@ -3,25 +3,28 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>تدبّر</title>
+    <title>Tadabbur · تدبّر: read Arabic slowly</title>
+    <meta name="description" content="Read Arabic articles word by word: meanings, roots and translations, your own phrases and notes, and flashcards that bring words back when they are due." />
+    <meta name="theme-color" content="#f3ecdb" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://tadabburi.netlify.app/" />
+    <meta property="og:title" content="Tadabbur · تدبّر: read Arabic slowly" />
+    <meta property="og:description" content="Tap any word for its meaning and root, keep phrases with your notes, and review with flashcards. Try it without an account." />
+    <meta property="og:image" content="https://tadabburi.netlify.app/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=Playpen+Sans+Arabic&family=Rakkas&family=Playpen+Sans&family=Gloria+Hallelujah&display=swap"
       rel="stylesheet"
     />
-    <script>
-      // apply the saved theme before first paint so there is no flash
-      (function () {
-        try {
-          var t = localStorage.getItem("ara-theme") || "light";
-          var dark = t === "dark" || (t === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
-          document.documentElement.dataset.theme = dark ? "dark" : "light";
-        } catch (e) {}
-      })();
-    </script>
+    <script src="/theme-init.js"></script>
   </head>
   <body>
+    <noscript>Tadabbur needs JavaScript to run.</noscript>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

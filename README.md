@@ -2,11 +2,9 @@
 
 **Read Arabic slowly, and keep every word you learn.**
 
-Try it: **[tadabburi.netlify.app](https://tadabburi.netlify.app)** (free, sign up with an email and password)
+**[tadabburi.netlify.app](https://tadabburi.netlify.app)**: try the sample article without an account, or sign in with Google.
 
-![Tadabbur: tap a word, mark it, keep a phrase, review it](docs/tadabbur.gif)
-
-[Watch the video in full quality](docs/tadabbur.mp4)
+![Tadabbur: tap a word, mark it, keep a phrase, review it](docs/tadabbur.webp)
 
 ## What you can do
 
@@ -18,13 +16,13 @@ Try it: **[tadabburi.netlify.app](https://tadabburi.netlify.app)** (free, sign u
 
 ## How to start
 
-1. Open [tadabburi.netlify.app](https://tadabburi.netlify.app) and sign up.
+1. Open [tadabburi.netlify.app](https://tadabburi.netlify.app). Press **try it now** for a sample article and a short tour, or sign in with Google to keep your own.
 2. Press **+**, paste an article (its title on the first line), and save.
 3. Read: tap a word, set its level, drag across words to keep a phrase.
 4. Open the **deck** each day to review.
 
 ## Made with AI
 
-Tadabbur was built by Hussain with **Claude** (Anthropic) used heavily throughout: planning the features, designing the pages, writing most of the code, testing it in a browser, making the product video and writing this README. Hussain decided what to build and steered every step.
+**Claude** (Anthropic) was used heavily to build Tadabbur: planning the features, designing the pages, writing most of the code, testing it in a browser, making the product video and writing this README, with a person deciding what to build and steering every step.
 
 Inside the app, **[Fanar](https://fanar.qa)** (Qatar's Arabic AI) gives the word meanings, roots, translations and audio. For any text you can also copy a ready-made prompt into Claude and paste its answer back, for translations and meanings read in context.

@@ -27,6 +27,7 @@ export default async (req: Request) => {
       if (data) return json({ translation: data.translation });
     }
 
+    await c.quota("translate");
     const user = context ? `Context: ${context}\n\nSentence: ${text}` : `Sentence: ${text}`;
     let out = cleanTranslation(await fanarChat(SYSTEM, user, 500, 6000));
     if (!validTranslation(text, out)) out = cleanTranslation(await shaheen(text, 3200));

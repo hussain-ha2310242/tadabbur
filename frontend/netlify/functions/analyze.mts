@@ -58,6 +58,7 @@ export default async (req: Request) => {
     }
     const missing = words.filter((w) => !forms[w]);
     if (missing.length) {
+      await c.quota("analyze");
       const list = missing.map((w, i) => `${i}. ${w}`).join("\n");
       const reply = extractJson(await fanarChat(SYSTEM, list, 90 * missing.length + 200, 8500));
       const fresh: { form: string; info: Form }[] = [];

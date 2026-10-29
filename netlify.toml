@@ -2,6 +2,7 @@
 # functions that hold the Fanar key (frontend/netlify/functions, served at /api/*).
 # The data lives in Supabase. Set FANAR_API_KEY in Netlify > Site configuration >
 # Environment variables (and SUPABASE_SECRET_KEY to share caches and keep audio).
+# See docs/DEVELOPING.md for running it on your own computer.
 [build]
   base = "frontend"
   command = "npm run build"
@@ -22,12 +23,22 @@
   to = "/index.html"
   status = 200
 
+# `netlify dev` in frontend/: the app and the functions together on http://localhost:8888
+[dev]
+  command = "npm run dev"
+  targetPort = 5173
+  port = 8888
+  framework = "#custom"
+
+# the content security policy is in the page itself (see frontend/vite.config.ts)
 [[headers]]
   for = "/*"
   [headers.values]
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
     X-Frame-Options = "DENY"
+    Strict-Transport-Security = "max-age=31536000; includeSubDomains"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=(), payment=()"
 
 # built files carry a content hash in their name, so they can be cached for good
 [[headers]]

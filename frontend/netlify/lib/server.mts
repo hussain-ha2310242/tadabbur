@@ -23,7 +23,22 @@ export const fail = (status: number, detail: string) => json({ detail }, status)
 
 export const sha1 = (s: string) => createHash("sha1").update(s).digest("hex");
 
-export type Caller = { userId: string; cache: SupabaseClient | null; body: Record<string, unknown> };
+export type Caller = {
+  userId: string;
+  cache: SupabaseClient | null;
+  body: Record<string, unknown>;
+  /** Count one paid Fanar call of `kind`; throws a 429 once today's limit is used. */
+  quota: (kind: Kind) => Promise<void>;
+};
+
+// a day's Fanar calls per person; each can be changed with an environment variable
+type Kind = "analyze" | "translate" | "enrich" | "tts";
+const LIMITS: Record<Kind, number> = {
+  analyze: Number(env("LIMIT_ANALYZE")) || 300, // 16 words a call: about 4,800 new words a day
+  translate: Number(env("LIMIT_TRANSLATE")) || 400,
+  enrich: Number(env("LIMIT_ENRICH")) || 200,
+  tts: Number(env("LIMIT_TTS")) || 300,
+};
 
 /** The signed-in caller and the request body, or the Response to send back.
  *  `cache` is a server client for the shared caches, when the secret key is set. */
@@ -43,7 +58,18 @@ export async function caller(req: Request): Promise<Caller | Response> {
   } catch {
     return fail(400, "the request body must be JSON");
   }
-  return { userId: data.user.id, cache: SECRET_KEY ? client : null, body };
+  // the caller's own client: the daily count is kept against their account
+  const own = createClient(SUPABASE_URL, PUBLIC_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { headers: { Authorization: `Bearer ${token}` } },
+  });
+  const quota = async (kind: Kind) => {
+    const { data: ok, error: qerr } = await own.rpc("take_quota", { p_kind: kind, p_cap: LIMITS[kind] });
+    // if the count itself fails, the call goes ahead rather than breaking the app
+    if (qerr) console.warn("quota check failed:", qerr.message);
+    else if (ok === false) throw new HttpError(429, "today's limit for this is used up; it resets tomorrow");
+  };
+  return { userId: data.user.id, cache: SECRET_KEY ? client : null, body, quota };
 }
 
 export const str = (v: unknown, max = 2000) => (typeof v === "string" ? v.trim().slice(0, max) : "");

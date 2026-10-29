@@ -303,6 +303,44 @@ grant execute on function public.text_statuses(bigint) to authenticated;
 grant execute on function public.mark_all_known(bigint) to authenticated;
 grant execute on function public.study_counts() to authenticated;
 
+-- ---------------------------------------------------------------- limits and leaving
+
+-- how many Fanar calls each person made today, per kind; only take_quota writes it
+create table public.usage (
+  user_id uuid not null references auth.users (id) on delete cascade,
+  day date not null,
+  kind text not null,
+  n integer not null default 0,
+  primary key (user_id, day, kind)
+);
+alter table public.usage enable row level security;
+create policy "read own usage" on public.usage for select to authenticated using (user_id = (select auth.uid()));
+
+-- count one call of `kind` for the caller today; true while under the cap
+create or replace function public.take_quota(p_kind text, p_cap integer)
+returns boolean language plpgsql security definer set search_path = '' as $$
+declare used integer;
+begin
+  if auth.uid() is null then return false; end if;
+  insert into public.usage (user_id, day, kind, n)
+  values (auth.uid(), (now() at time zone 'utc')::date, left(p_kind, 20), 1)
+  on conflict (user_id, day, kind) do update set n = public.usage.n + 1
+  returning n into used;
+  return used <= p_cap;
+end $$;
+revoke execute on function public.take_quota(text, integer) from public, anon;
+grant execute on function public.take_quota(text, integer) to authenticated;
+
+-- a person can remove their own account; their notes, words and history go with it (on delete cascade)
+create or replace function public.delete_my_account()
+returns void language plpgsql security definer set search_path = '' as $$
+begin
+  if auth.uid() is null then raise exception 'sign in first'; end if;
+  delete from auth.users where id = auth.uid();
+end $$;
+revoke execute on function public.delete_my_account() from public, anon;
+grant execute on function public.delete_my_account() to authenticated;
+
 -- ---------------------------------------------------------------- storage
 
 -- spoken sentences, saved once (private: only the server functions read and write it)

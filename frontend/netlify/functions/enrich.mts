@@ -32,6 +32,7 @@ export default async (req: Request) => {
       const { data } = await c.cache.from("word_info").select("info_json").eq("lemma_key", lemmaKey).maybeSingle();
       if (data) return json(data.info_json);
     }
+    await c.quota("enrich");
     let hints = pos ? ` (part of speech: ${pos})` : "";
     if (root) hints += ` (root: ${root})`;
     const info = extractJson(await fanarChat(SYSTEM, `Word: ${lemma}${hints}`, 800, 9000));

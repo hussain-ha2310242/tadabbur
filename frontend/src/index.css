@@ -3357,3 +3357,249 @@ h2.note-title::before {
     animation: none;
   }
 }
+
+/* ---- landing: the second button, the note under the buttons, the way in ---- */
+.lp-ghost {
+  padding: 0.55rem 1.3rem;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1.5px var(--ink-red);
+  color: var(--ink-red);
+  font-size: 1rem;
+  transition: background-color 160ms ease;
+}
+.lp-ghost:hover {
+  background: var(--ink-red-soft);
+}
+.lp-cta {
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.lp-note {
+  margin: 0.1rem 0 0;
+  color: var(--muted);
+  font-size: calc(var(--ui-size) * 0.92);
+}
+.lp-auth {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.7rem;
+  width: min(22rem, 100%);
+  margin-top: 0.4rem;
+  animation: lp-rise 260ms ease both;
+}
+.lp-google {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.6rem 1rem;
+  border-radius: 999px;
+  background: #fff;
+  color: #1f1f1f;
+  font: 500 0.95rem var(--font-latin);
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.12), 0 4px 12px -6px var(--shadow);
+  transition: box-shadow 160ms ease, transform 160ms ease;
+}
+.lp-google:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.16), 0 8px 16px -8px var(--shadow);
+}
+.lp-auth .lp-form {
+  margin-top: 0;
+}
+
+/* ---- the demo bar: a small pill at the bottom while trying the app ---- */
+.demo-bar {
+  position: fixed;
+  bottom: 14px;
+  left: 50%;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  max-width: calc(100vw - 20px);
+  padding: 0.3rem 0.35rem 0.3rem 0.9rem;
+  border-radius: 999px;
+  background: var(--fg);
+  color: var(--bg);
+  font-size: calc(var(--ui-size) * 0.95);
+  box-shadow: 0 10px 28px -10px rgb(0 0 0 / 0.45);
+  transform: translateX(-50%);
+  animation: demo-in 360ms cubic-bezier(0.34, 1.3, 0.64, 1) both;
+}
+.demo-bar button {
+  padding: 0.3rem 0.65rem;
+  border-radius: 999px;
+  color: inherit;
+  opacity: 0.85;
+  white-space: nowrap;
+}
+.demo-bar button:hover {
+  opacity: 1;
+  background: rgb(255 255 255 / 0.1);
+}
+.demo-bar .demo-bar-go {
+  background: var(--ink-red);
+  color: #fff;
+  opacity: 1;
+}
+.demo-bar .demo-bar-go:hover {
+  background: color-mix(in srgb, var(--ink-red) 88%, #fff);
+}
+.demo-bar-text {
+  margin-right: 0.3rem;
+  opacity: 0.75;
+  white-space: nowrap;
+}
+@keyframes demo-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 16px);
+  }
+}
+@media (max-width: 640px) {
+  .demo-bar-text {
+    display: none;
+  }
+  .demo-bar {
+    padding-left: 0.35rem;
+  }
+}
+
+/* ---- the guided tour: a soft spotlight and a card; the page stays usable ---- */
+.tour {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+}
+.tour-dim,
+.tour-spot {
+  position: fixed;
+  border-radius: 10px;
+  transition: top 380ms cubic-bezier(0.22, 1, 0.36, 1), left 380ms cubic-bezier(0.22, 1, 0.36, 1),
+    width 380ms cubic-bezier(0.22, 1, 0.36, 1), height 380ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.tour-dim {
+  inset: 0;
+  background: rgb(30 20 10 / 0.35);
+}
+.tour-spot {
+  box-shadow: 0 0 0 9999px rgb(30 20 10 / 0.35), 0 0 0 2px var(--gold);
+}
+.tour-card {
+  position: fixed;
+  padding: 0.8rem 1rem 0.7rem;
+  pointer-events: auto;
+  transform: rotate(-0.4deg);
+  animation: lp-rise 300ms cubic-bezier(0.34, 1.4, 0.64, 1) both;
+  transition: top 380ms cubic-bezier(0.22, 1, 0.36, 1), left 380ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.tour-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: var(--ink-red);
+  font-size: 1.05rem;
+}
+.tour-count {
+  color: var(--muted);
+  font: 0.75rem var(--font-latin);
+}
+.tour-text {
+  margin: 0.35rem 0 0.6rem;
+  color: var(--fg);
+  font: 0.9rem/1.55 var(--font-latin);
+}
+.tour-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: var(--ui-size);
+}
+.tour-nav {
+  display: flex;
+  gap: 0.4rem;
+}
+.tour-skip,
+.tour-back {
+  color: var(--muted);
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+.tour-next {
+  padding: 0.2rem 0.9rem;
+  border-radius: 999px;
+  background: var(--ink-red);
+  color: #fff;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tour-spot,
+  .tour-card,
+  .demo-bar {
+    transition: none;
+    animation: none;
+  }
+}
+
+/* ---- deleting the account: said plainly, with a second step ---- */
+.pf-delete {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  margin: 0.6rem 0 0;
+  color: var(--ink-red);
+}
+.pf-delete-go {
+  padding: 0.2rem 0.8rem;
+  border-radius: 999px;
+  background: var(--ink-red);
+  color: #fff;
+}
+.pf-delete-go:disabled {
+  opacity: 0.6;
+}
+
+/* ---- when a screen breaks ---- */
+.crash {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.8rem;
+  max-width: 28rem;
+  margin: 18vh auto 0;
+  padding: 2rem;
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  text-align: center;
+  font-family: var(--font-latin);
+  box-shadow: 0 14px 36px var(--shadow);
+}
+.crash h1 {
+  margin: 0;
+  font: 400 2.4rem/1.2 "Rakkas", var(--font-ar);
+}
+.crash button {
+  padding: 0.4rem 1.2rem;
+  border-radius: 999px;
+  background: var(--ink-red);
+  color: #fff;
+}
+.crash code {
+  color: var(--muted);
+  font-size: 0.75rem;
+  word-break: break-word;
+}
+
+/* a tag such as #sample reads left to right inside the Arabic heading */
+.note-head-tag {
+  unicode-bidi: isolate;
+  direction: ltr;
+}
