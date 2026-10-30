@@ -2,7 +2,8 @@
 
 **Read Arabic slowly, and keep every word you learn.**
 
-**[tadabburi.netlify.app](https://tadabburi.netlify.app)**: try the sample article without an account, or sign in with Google.
+**[tadabburi.netlify.app](https://tadabburi.netlify.app)**
+
 
 ![Tadabbur: tap a word, mark it, keep a phrase, review it](docs/tadabbur.webp)
 
@@ -20,9 +21,3 @@
 2. Press **+**, paste an article (its title on the first line), and save.
 3. Read: tap a word, set its level, drag across words to keep a phrase.
 4. Open the **deck** each day to review.
-
-## Made with AI
-
-**Claude** (Anthropic) was used heavily to build Tadabbur: planning the features, designing the pages, writing most of the code, testing it in a browser, making the product video and writing this README, with a person deciding what to build and steering every step.
-
-Inside the app, **[Fanar](https://fanar.qa)** (Qatar's Arabic AI) gives the word meanings, roots, translations and audio. For any text you can also copy a ready-made prompt into Claude and paste its answer back, for translations and meanings read in context.

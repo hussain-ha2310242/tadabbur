@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent, PointerEvent } from "react";
 
 export const LEVELS: { status: string; label: string; key: string }[] = [
@@ -35,6 +35,15 @@ export function StatusSlider({
   const trackRef = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
   const [drag, setDrag] = useState<number | null>(null);
+
+  // a new level (by key, click or drag) gets a small "saved" stamp and the
+  // thumb bumps; the first value it is drawn with does not
+  const was = useRef(value);
+  const [saved, setSaved] = useState(0);
+  useEffect(() => {
+    if (value !== was.current && value !== undefined) setSaved((n) => n + 1);
+    was.current = value;
+  }, [value]);
 
   // position from pointer x, in stop indices 0..3 (the thumb is inset by half its
   // width on each side, so the usable track is inset by 6px, or 11px for the knob)
@@ -130,7 +139,7 @@ export function StatusSlider({
     <div className="slider-wrap" style={vars}>
       <div
         ref={trackRef}
-        className={`slider ${shown !== null ? "set" : ""} ${drag !== null ? "dragging" : ""}`}
+        className={`slider ${shown !== null ? "set" : ""} ${drag !== null ? "dragging" : ""} ${saved ? `bump-${saved % 2 ? "a" : "b"}` : ""}`}
         role="slider"
         tabIndex={0}
         aria-label="Familiarity"
@@ -150,7 +159,21 @@ export function StatusSlider({
         ))}
         <span className="slider-thumb" aria-hidden="true" />
       </div>
-      {!hideCaption && <span className="slider-cap">{caption}</span>}
+      {!hideCaption && (
+        <span key={saved} className={`slider-cap ${saved ? "just" : ""}`}>
+          {saved > 0 && (
+            <span className="slider-saved" aria-hidden="true">
+              ✓
+            </span>
+          )}
+          {caption}
+        </span>
+      )}
+      {hideCaption && saved > 0 && (
+        <span key={`s${saved}`} className="slider-saved alone" aria-hidden="true">
+          ✓
+        </span>
+      )}
     </div>
   );
 }

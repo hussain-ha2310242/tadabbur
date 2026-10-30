@@ -1,11 +1,35 @@
-import { useEffect, useRef, useState } from "react";
-import { api, DueWord, TagWithCount, TextSummary } from "../api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { api, shared, type Answer, type DueWord, type TagWithCount, type TextSummary } from "../api";
 import { cleanGloss } from "../gloss";
-import { StatusSlider } from "../StatusSlider";
+import { SpeakButton, speak } from "../Speak";
+import { nextStars, Stars } from "../Stars";
 
-const STATUSES = ["not_known", "hard", "easy", "known"];
+/** Anki's answers, in order, with their keys. */
+const ANSWERS: { a: Answer; label: string; key: string }[] = [
+  { a: "again", label: "Again", key: "1" },
+  { a: "hard", label: "Hard", key: "2" },
+  { a: "good", label: "Good", key: "3" },
+  { a: "easy", label: "Easy", key: "4" },
+];
 
-const stars = (n: number | undefined) => "*".repeat(Math.max(1, n ?? 0));
+/** A card answered with a step shorter than this comes back in the same
+ *  session, as in Anki (its "learn ahead" limit). */
+const LEARN_AHEAD = 20 * 60 * 1000;
+
+const dueAt = (c: DueWord) => (c.due ? Date.parse(c.due) : 0);
+
+/** The next card: a learning card whose step is up, else the next in the
+ *  queue, else the learning card due soonest (Anki shows it early rather than
+ *  leave you waiting). Returns the card and what is left. */
+function advance(queue: DueWord[], learning: DueWord[]): [DueWord | null, DueWord[], DueWord[]] {
+  const now = Date.now();
+  const byDue = [...learning].sort((x, y) => dueAt(x) - dueAt(y));
+  const ready = byDue.find((c) => dueAt(c) <= now);
+  if (ready) return [ready, queue, learning.filter((c) => c !== ready)];
+  if (queue.length) return [queue[0], queue.slice(1), learning];
+  if (byDue.length) return [byDue[0], queue, learning.filter((c) => c !== byDue[0])];
+  return [null, queue, learning];
+}
 
 const MONO = 'ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace';
 
@@ -40,16 +64,22 @@ const box = (on: boolean) => (
 const link = (on: boolean) =>
   `hand text-sm transition-colors ${on ? "text-[var(--ink-red)] underline underline-offset-4" : "text-[var(--muted)] hover:text-[var(--fg)]"}`;
 
-/** The deck. With `textId`, it opens on that note's cards only; the filter
- *  panel shows the note selected, so the scope can still be widened. */
+/** The deck, the Anki way: the front, then "show answer", then again, hard,
+ *  good or easy, each with how long until the card comes back. Cards on a
+ *  short step (again, and new cards) come back in the same session. With
+ *  `textId`, it opens on that note's cards only; the filter panel shows the
+ *  note selected, so the scope can still be widened. */
 export default function Review({ textId }: { textId?: number } = {}) {
   const start: Filters = textId ? { ...ALL, scopes: [`text:${textId}`] } : ALL;
-  const [queue, setQueue] = useState<DueWord[]>([]);
-  const [picked, setPicked] = useState<string | null>(null); // the level chosen for this card
+  const [queue, setQueue] = useState<DueWord[]>([]); // still to see
+  const [learning, setLearning] = useState<DueWord[]>([]); // answered, back in a few minutes
+  const [current, setCurrent] = useState<DueWord | null>(null);
+  const [revealed, setRevealed] = useState(false);
   const [done, setDone] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [seed, setSeed] = useState(0); // bumps per card: flips direction and replays the entrance
+  const [stamp, setStamp] = useState<{ a: Answer; label: string; k: number } | null>(null);
   const [applied, setApplied] = useState<Filters>(start); // what the queue is showing
   const [draft, setDraft] = useState<Filters>(start); // what the panel is set to
   const [open, setOpen] = useState(false);
@@ -57,9 +87,6 @@ export default function Review({ textId }: { textId?: number } = {}) {
   const [notes, setNotes] = useState<TextSummary[]>([]);
   const [showAllSources, setShowAllSources] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
-
-  // choosing a level reveals the meaning; the level is saved on next
-  const revealed = picked !== null;
 
   useEffect(() => {
     api.listTags().then(setTags).catch(() => {});
@@ -77,12 +104,12 @@ export default function Review({ textId }: { textId?: number } = {}) {
     return () => document.removeEventListener("mousedown", onDown);
   }, []);
 
-  // fetch the due words for the chosen sources (one request), keep those that
+  // fetch the due cards for the chosen sources (one request), keep those that
   // match the difficulty and importance filters, and shuffle when asked
   async function load(f: Filters, shuffle: boolean) {
     setLoading(true);
     setError(null);
-    setPicked(null);
+    setRevealed(false);
     const tagIds = f.scopes.filter((k) => k.startsWith("tag:")).map((k) => Number(k.slice(4)));
     const textIds = f.scopes.filter((k) => k.startsWith("text:")).map((k) => Number(k.slice(5)));
     try {
@@ -92,7 +119,10 @@ export default function Review({ textId }: { textId?: number } = {}) {
           (f.statuses.length === 0 || f.statuses.includes(w.status)) &&
           (f.levels.length === 0 || f.levels.includes(Math.max(1, w.importance ?? 1))),
       );
-      setQueue(shuffle ? shuffled(kept) : kept);
+      const [first, rest] = advance(shuffle ? shuffled(kept) : kept, []);
+      setCurrent(first);
+      setQueue(rest);
+      setLearning([]);
       setDone(0);
       setApplied(f);
       setSeed((s) => s + 1);
@@ -103,60 +133,68 @@ export default function Review({ textId }: { textId?: number } = {}) {
     }
   }
 
-  const current = queue[0];
-
   // English to Arabic and Arabic to English take turns, so both get tested.
   // The English front needs a gloss to show.
   // A note's card always shows the selection first and your comment behind it.
   const isNote = current?.kind === "note";
   const enFront = !isNote && !!current?.gloss && seed % 2 === 0;
 
-  // step 1: pick a level, which reveals the meaning
-  function choose(status: string) {
-    if (!current) return;
-    setError(null);
-    setPicked(status);
+  // what each answer would do, worked out when the answer is shown
+  const outcomes = useMemo(
+    () => (current && revealed ? shared.preview(current.card_json) : null),
+    [current, revealed],
+  );
+
+  function reveal() {
+    if (current && !revealed) setRevealed(true);
   }
 
-  // step 2: save the chosen level and move on
-  async function next() {
-    if (!current || picked === null) return;
+  // save the answer in the background and go straight on to the next card
+  function answer(a: Answer) {
+    if (!current || !outcomes) return;
     setError(null);
+    const out = outcomes[a];
+    const back = { ...current, card_json: out.card_json, due: out.due, status: out.status };
+    const soon = Date.parse(out.due) - Date.now() < LEARN_AHEAD;
+    if (!soon) setDone((d) => d + 1);
+    const [next, q, l] = advance(queue, soon ? [...learning, back] : learning);
+    setCurrent(next);
+    setQueue(q);
+    setLearning(l);
+    setRevealed(false);
+    setSeed((s) => s + 1);
+    setStamp({ a, label: out.label, k: (stamp?.k ?? 0) + 1 });
+    api.grade(current.lemma_key, a, out).catch((e) => setError(`not saved: ${String(e)}`));
+  }
+
+  // stars on the card: a word's in the wallet, a note's on the note
+  async function setImportance(n: number) {
+    if (!current) return;
+    const key = current.lemma_key;
+    setCurrent({ ...current, importance: n });
     try {
-      await api.grade(current.lemma_key, picked);
-      setQueue(picked === "not_known" ? [...queue.slice(1), current] : queue.slice(1));
-      if (picked !== "not_known") setDone((d) => d + 1);
-      setPicked(null);
-      setSeed((s) => s + 1);
+      if (current.kind === "note") await api.updateNote(Number(key.slice(shared.NOTE_PREFIX.length)), { importance: n });
+      else await api.updateVocab(key, { importance: n });
     } catch (e) {
       setError(String(e));
     }
   }
 
-  // same rule as the reader: one star, then two, three, and back to one
-  async function cycleImportance() {
-    if (!current) return;
-    const cur = Math.max(1, current.importance ?? 0);
-    const next = (cur % 3) + 1;
-    setQueue((q) => q.map((w, i) => (i === 0 ? { ...w, importance: next } : w)));
-    try {
-      await api.updateVocab(current.lemma_key, { importance: next });
-    } catch (e) {
-      setError(String(e));
-    }
-  }
+  const sayIt = () =>
+    current && speak(current.display).catch((e) => setError(String(e instanceof Error ? e.message : e)));
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement;
       if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
-      if (e.key === " ") {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === " " || e.key === "Enter") {
         e.preventDefault();
-        if (revealed) next();
-      } else if (e.key === "i") cycleImportance();
-      else if (["1", "2", "3", "4"].includes(e.key)) {
-        choose(STATUSES[parseInt(e.key) - 1]);
-      }
+        if (revealed) answer("good");
+        else reveal();
+      } else if (e.key === "i") setImportance(nextStars(current?.importance ?? 0));
+      else if (e.key === "h") sayIt();
+      else if (revealed && ["1", "2", "3", "4"].includes(e.key)) answer(ANSWERS[Number(e.key) - 1].a);
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -165,13 +203,19 @@ export default function Review({ textId }: { textId?: number } = {}) {
   const activeCount =
     (applied.scopes.length ? 1 : 0) + (applied.statuses.length ? 1 : 0) + (applied.levels.length ? 1 : 0);
 
-  const total = done + queue.length;
+  // Anki's three counts over what is left: new, learning, review
+  const left = [...(current ? [current] : []), ...queue, ...learning];
+  const kinds = { new: 0, learning: 0, review: 0 };
+  for (const c of left) kinds[shared.cardKind(c.card_json)] += 1;
+  const curKind = current ? shared.cardKind(current.card_json) : null;
+
+  const total = done + left.length;
   const pct = total === 0 ? 0 : Math.round((done / total) * 100);
 
   const status = loading
     ? ""
     : current
-      ? `${queue.length} to go${done ? ` · ${done} done` : ""}`
+      ? ""
       : done > 0
         ? `${done} ${done === 1 ? "card" : "cards"} done, well done`
         : activeCount
@@ -185,10 +229,21 @@ export default function Review({ textId }: { textId?: number } = {}) {
   ];
   const sourceSummary = draft.scopes.length ? `${draft.scopes.length} selected` : "everything";
 
+  const counts = current && (
+    <p className="deck-counts hand" title="new · learning · to review">
+      <span className={`dc dc-new ${curKind === "new" ? "cur" : ""}`}>{kinds.new}</span>
+      <span className="dc-sep">·</span>
+      <span className={`dc dc-learn ${curKind === "learning" ? "cur" : ""}`}>{kinds.learning}</span>
+      <span className="dc-sep">·</span>
+      <span className={`dc dc-review ${curKind === "review" ? "cur" : ""}`}>{kinds.review}</span>
+      {done > 0 && <span className="dc-done">{done} done</span>}
+    </p>
+  );
+
   const header = (
     <>
       <div className="relative mb-5 flex items-baseline justify-between gap-4" ref={panelRef}>
-        <p className="hand text-sm" style={{ color: "var(--muted)" }}>{status}</p>
+        {counts || <p className="hand text-sm" style={{ color: "var(--muted)" }}>{status}</p>}
         <button
           onClick={() => {
             setDraft(applied);
@@ -338,6 +393,8 @@ export default function Review({ textId }: { textId?: number } = {}) {
   const lead = (current.before ?? "").split(" ").filter(Boolean).slice(-6).join(" ");
   const tail = (current.after ?? "").split(" ").filter(Boolean).slice(0, 6).join(" ");
   const roots = (current.root ?? "").split(" ").filter(Boolean);
+  // the Arabic can be heard once it is on show: on the front, or behind an English front
+  const canHear = !enFront || revealed;
 
   return (
     <div className="mx-auto max-w-xl">
@@ -355,82 +412,87 @@ export default function Review({ textId }: { textId?: number } = {}) {
         </p>
       )}
 
-      <div
-        key={`${current.lemma_key}-${seed}`}
-        className="sticky review-card card-enter"
-        style={{ transform: "rotate(-0.8deg)" }}
-      >
-        <div className="review-meta">
-          <span className="hand text-sm" style={{ color: "var(--sticky-muted)" }}>
-            {isNote ? (current.comment ? "note" : "phrase") : enFront ? "en → ar" : "ar → en"}
+      <div className="review-stage">
+        {stamp && (
+          <span key={stamp.k} className={`review-stamp ans-${stamp.a}`} aria-hidden="true">
+            {stamp.a} · {stamp.label}
           </span>
-          {!isNote && (
-            <button
-              onClick={cycleImportance}
-              title="Importance (i)"
-              aria-label="Cycle importance"
-              className={`wp-imp ${(current.importance ?? 0) > 0 ? "on" : ""}`}
-            >
-              {stars(current.importance)}
-            </button>
-          )}
-        </div>
+        )}
+        <div
+          key={`${current.lemma_key}-${seed}`}
+          className="sticky review-card card-enter"
+          style={{ transform: "rotate(-0.8deg)" }}
+        >
+          <div className="review-meta">
+            <span className="hand text-sm" style={{ color: "var(--sticky-muted)" }}>
+              {isNote ? (current.comment ? "note" : "phrase") : enFront ? "en → ar" : "ar → en"}
+            </span>
+            <span className="review-tools">
+              {canHear && <SpeakButton text={current.display} onError={setError} />}
+              <Stars value={current.importance ?? 0} onChange={setImportance} />
+            </span>
+          </div>
 
-        <div className="review-front">
-          {isNote ? (
-            <div className="ar review-note-front" dir="rtl">
-              {lead && <span className="review-note-ctx">…{lead} </span>}
-              <mark>{current.display}</mark>
-              {tail && <span className="review-note-ctx"> {tail}…</span>}
-            </div>
-          ) : enFront ? (
-            <div className="hand text-4xl leading-tight">{front}</div>
-          ) : (
-            <div className="ar text-5xl leading-relaxed" style={{ color: "var(--sticky-ink)" }}>
-              {front}
-            </div>
-          )}
-        </div>
-
-        {revealed && (
-          <div className="review-back">
+          <div className="review-front">
             {isNote ? (
-              <>
-                {back && <div className="hand review-note-back" dir="auto">{back}</div>}
-                {current.comment && <p className="hand review-note-comment" dir="auto">{current.comment}</p>}
-                {!back && !current.comment && <div className="hand review-note-back">-</div>}
-              </>
+              <div className="ar review-note-front" dir="rtl">
+                {lead && <span className="review-note-ctx">…{lead} </span>}
+                <mark>{current.display}</mark>
+                {tail && <span className="review-note-ctx"> {tail}…</span>}
+              </div>
             ) : enFront ? (
-              <div className="ar text-3xl leading-relaxed">{back ?? "-"}</div>
+              <div className="hand text-4xl leading-tight">{front}</div>
             ) : (
-              <div className="hand text-3xl leading-tight">{back ?? "-"}</div>
-            )}
-            {roots.length > 0 && (
-              <div className="flex gap-1" dir="rtl">
-                {roots.map((r, i) => (
-                  <span key={i} className="root-l ar">{r}</span>
-                ))}
+              <div className="ar text-5xl leading-relaxed" style={{ color: "var(--sticky-ink)" }}>
+                {front}
               </div>
             )}
-            {current.notes && (
-              <p className="hand text-base" style={{ color: "var(--sticky-muted)" }}>
-                {current.notes}
-              </p>
+          </div>
+
+          {revealed && (
+            <div className="review-back">
+              {isNote ? (
+                <>
+                  {back && <div className="hand review-note-back" dir="auto">{back}</div>}
+                  {current.comment && <p className="hand review-note-comment" dir="auto">{current.comment}</p>}
+                  {!back && !current.comment && <div className="hand review-note-back">-</div>}
+                </>
+              ) : enFront ? (
+                <div className="ar text-3xl leading-relaxed">{back ?? "-"}</div>
+              ) : (
+                <div className="hand text-3xl leading-tight">{back ?? "-"}</div>
+              )}
+              {roots.length > 0 && (
+                <div className="flex gap-1" dir="rtl">
+                  {roots.map((r, i) => (
+                    <span key={i} className="root-l ar">{r}</span>
+                  ))}
+                </div>
+              )}
+              {current.notes && (
+                <p className="hand text-base" style={{ color: "var(--sticky-muted)" }}>
+                  {current.notes}
+                </p>
+              )}
+            </div>
+          )}
+
+          <div className="review-foot">
+            {revealed && outcomes ? (
+              <div className="answers" role="group" aria-label="How well did you know it?">
+                {ANSWERS.map(({ a, label, key }) => (
+                  <button key={a} onClick={() => answer(a)} className={`ans ans-${a}`} title={`${label} (${key}${a === "good" ? " or space" : ""})`}>
+                    <span className="ans-when">{outcomes[a].label}</span>
+                    <span className="ans-label">{label}</span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <button onClick={reveal} className="show-answer">
+                show answer <kbd>space</kbd>
+              </button>
             )}
           </div>
-        )}
-
-        <div className="review-foot">
-          <StatusSlider variant="dial" value={picked ?? undefined} onChange={choose} />
-          <button
-            onClick={next}
-            className="review-next"
-            title="Next (space)"
-            tabIndex={revealed ? 0 : -1}
-            style={{ visibility: revealed ? "visible" : "hidden" }}
-          >
-            next <kbd>space</kbd>
-          </button>
         </div>
       </div>
     </div>

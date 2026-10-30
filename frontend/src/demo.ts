@@ -3,7 +3,7 @@
  *  nothing is kept after the tab closes. */
 
 import { setBackend, shared, type Annotation, type Calls, type DueWord, type Settings, type TextSummary, type WalletWord } from "./api";
-import { isWord, splitSentences, wordKeys, type Sentence, type Token } from "./arabic";
+import { isWord, splitSentences, titleSentence, wordKeys, type Sentence } from "./arabic";
 import { article, BODY, SENTENCES_EN, TITLE } from "./sample";
 import { analysisKey, buildPrompt, parseAnalysis, type ParsedAnalysis } from "./study";
 
@@ -34,9 +34,11 @@ const TAG_ID = 1;
 const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Qatar";
 let state: State;
 
-function tokenAt(si: number, ti: number): Token | undefined {
-  return state.sentences[si]?.tokens[ti];
-}
+/** A sentence by index; -1 is the title. */
+const sentenceAt = (si: number): Sentence | undefined => (si === -1 ? head() : state.sentences[si]);
+const head = () => titleSentence(state.title, null, state.sentences);
+/** Every sentence, the title first. */
+const everything = () => [head(), ...state.sentences];
 
 function fresh(): State {
   const sentences = article();
@@ -93,7 +95,7 @@ function quoteOf(a: [number, number], b: [number, number]): { quote: string; mea
   const words: string[] = [];
   const glosses: string[] = [];
   for (let si = a[0]; si <= b[0]; si++) {
-    const toks = state.sentences[si].tokens;
+    const toks = sentenceAt(si)?.tokens ?? [];
     const lo = si === a[0] ? a[1] : 0;
     const hi = si === b[0] ? b[1] : toks.length - 1;
     for (const t of toks.slice(lo, hi + 1)) {
@@ -118,6 +120,7 @@ function makeNote(ssi: number, sti: number, esi: number, eti: number, comment: s
     meaning,
     comment,
     status: "not_known",
+    importance: 0,
     created_at: new Date().toISOString(),
     ...shared.newCard(),
   };
@@ -159,7 +162,7 @@ const later = async (): Promise<never> => {
 
 const demoCalls: Calls = {
   listTexts: async (): Promise<TextSummary[]> => {
-    const keys = wordKeys(state.sentences);
+    const keys = wordKeys(everything());
     const known = [...keys].filter((k) => state.words.get(k)?.status === "known").length;
     return [
       {
@@ -181,13 +184,17 @@ const demoCalls: Calls = {
   getText: async (id) => {
     if (id !== TEXT_ID) throw new Error("404: text not found");
     const statuses: Record<string, string> = {};
-    for (const k of wordKeys(state.sentences)) {
+    const importance: Record<string, number> = {};
+    for (const k of wordKeys(everything())) {
       const w = state.words.get(k);
       if (w) statuses[k] = w.status;
+      if (w?.importance) importance[k] = w.importance;
     }
     return {
       id: TEXT_ID,
       title: state.title,
+      titleSentence: head(),
+      importance,
       source: state.source,
       url: state.url,
       sentences: state.sentences,
@@ -204,7 +211,7 @@ const demoCalls: Calls = {
     const t = title.split(/\s+/).filter(Boolean).join(" ").slice(0, 200);
     if (!t) throw new Error("the title cannot be empty");
     state.title = t;
-    return { id, title: t };
+    return { id, title: t, titleSentence: head() };
   },
   setTextSource: async (id, source, url) => {
     const u = url.trim() || null;
@@ -256,16 +263,25 @@ const demoCalls: Calls = {
     let a: [number, number] = [n.start_si, n.start_ti];
     let b: [number, number] = [n.end_si, n.end_ti];
     if (b[0] < a[0] || (b[0] === a[0] && b[1] < a[1])) [a, b] = [b, a];
-    if (!tokenAt(a[0], a[1]) || !tokenAt(b[0], b[1])) throw new Error("the selection is outside the text");
-    const note = makeNote(a[0], a[1], b[0], b[1], (n.comment ?? "").trim().slice(0, 2000));
+    const at = (p: [number, number]) => sentenceAt(p[0])?.tokens[p[1]];
+    if (!at(a) || !at(b)) throw new Error("the selection is outside the text");
+    // saved at once without its meaning, like the real app; noteMeaning adds it
+    const note = { ...makeNote(a[0], a[1], b[0], b[1], (n.comment ?? "").trim().slice(0, 2000)), meaning: null };
     state.notes.push(note);
     log("marks");
     return noteOut(note);
+  },
+  noteMeaning: async (id) => {
+    const n = state.notes.find((x) => x.id === id);
+    if (!n) return null;
+    n.meaning = quoteOf([n.start_si, n.start_ti], [n.end_si, n.end_ti]).meaning || null;
+    return n.meaning;
   },
   updateNote: async (id, patch) => {
     const n = state.notes.find((x) => x.id === id);
     if (!n) throw new Error("404: note not found");
     if (patch.comment !== undefined) n.comment = patch.comment.trim().slice(0, 2000);
+    if (patch.importance !== undefined) n.importance = patch.importance;
     if (patch.status !== undefined) {
       n.status = patch.status;
       log("marks");
@@ -357,7 +373,7 @@ const demoCalls: Calls = {
     const now = Date.now();
     const isDue = (x: { status: string; due: string | null }) => x.status !== "known" && (!x.due || Date.parse(x.due) <= now);
     const words: DueWord[] = [...state.words.values()].filter(isDue).map((w) => {
-      const { created_at: _c, ...rest } = strip(w);
+      const { created_at: _c, ...rest } = w;
       void _c;
       return rest;
     });
@@ -370,19 +386,20 @@ const demoCalls: Calls = {
       gloss: n.meaning ?? "",
       comment: n.comment,
       notes: state.title,
-      importance: 0,
+      importance: n.importance,
       status: n.status,
       due: n.due,
+      card_json: n.card_json,
       kind: "note" as const,
-      ...shared.spanParts(state.sentences, n),
+      ...shared.spanParts(state.sentences, n, head()),
     }));
     return [...words, ...notes];
   },
-  grade: async (lemmaKey, status) => {
+  grade: async (lemmaKey, answer, outcome) => {
     const isNote = lemmaKey.startsWith(shared.NOTE_PREFIX);
     const item = isNote ? state.notes.find((n) => `${shared.NOTE_PREFIX}${n.id}` === lemmaKey) : state.words.get(lemmaKey);
     if (!item) throw new Error("404: not found");
-    const { card_json, due } = shared.nextCard(item.card_json, status);
+    const { status, card_json, due } = outcome ?? shared.nextCard(item.card_json, answer);
     Object.assign(item, { status, card_json, due });
     log("reviews");
     return { lemma_key: lemmaKey, status, due };
@@ -390,7 +407,7 @@ const demoCalls: Calls = {
   tts: later,
   markAllKnown: async () => {
     let marked = 0;
-    for (const s of state.sentences)
+    for (const s of everything())
       for (const t of s.tokens) {
         if (!isWord(t)) continue;
         const w = state.words.get(t.lemma_key);

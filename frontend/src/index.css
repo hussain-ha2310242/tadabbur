@@ -703,8 +703,8 @@ textarea::placeholder {
   .bento .sent-card {
     padding-top: 2.1rem;
   }
-  /* the word card: the word, its meaning, the slider and the note only */
-  .bento .wp-meta,
+  /* the word card: the word, its stars, its meaning, the slider and the note only */
+  .bento .wp-meta .src,
   .bento .wp-line {
     display: none;
   }
@@ -3602,4 +3602,363 @@ h2.note-title::before {
 .note-head-tag {
   unicode-bidi: isolate;
   direction: ltr;
+}
+
+/* ---------------------------------------------------------------- the deck, the Anki way */
+/* Anki's colours: again red, hard terracotta, good olive, easy blue; the
+   counts above the card are new (blue), learning (red) and review (olive) */
+:root,
+:root[data-theme="light"] {
+  --ans-blue: #3d6a96;
+}
+:root[data-theme="dark"] {
+  --ans-blue: #92b8de;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ans-blue: #92b8de;
+  }
+}
+
+.deck-counts {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+}
+.dc {
+  font-weight: 600;
+  padding-bottom: 1px;
+  border-bottom: 2px solid transparent;
+  transition: border-color 200ms ease;
+}
+.dc-new { color: var(--ans-blue); }
+.dc-learn { color: var(--st-0); }
+.dc-review { color: var(--st-2); }
+.dc.cur { border-bottom-color: currentColor; }
+.dc-sep { color: var(--muted); opacity: 0.6; }
+.dc-done {
+  margin-left: 0.6rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.review-stage {
+  position: relative;
+}
+.review-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+/* before the answer: one quiet button */
+.show-answer {
+  margin: 0 auto;
+  padding: 0.45rem 1.1rem;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--sticky-fg) 8%, transparent);
+  color: var(--sticky-fg);
+  font-family: var(--font-latin);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 160ms ease, scale 160ms ease;
+}
+.show-answer:hover {
+  background: color-mix(in srgb, var(--sticky-fg) 14%, transparent);
+}
+.show-answer:active {
+  scale: 0.96;
+}
+.show-answer kbd {
+  margin-left: 0.4rem;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 400;
+  opacity: 0.6;
+}
+
+/* after it: four answers, each with when the card comes back */
+.answers {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.4rem;
+  width: 100%;
+  animation: answers-in 220ms cubic-bezier(0.22, 0.9, 0.3, 1) both;
+}
+@keyframes answers-in {
+  from { opacity: 0; transform: translateY(6px); }
+}
+.ans {
+  --a: var(--st-2);
+  display: grid;
+  justify-items: center;
+  gap: 1px;
+  padding: 0.35rem 0.2rem 0.4rem;
+  border: 0;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--a) 13%, transparent);
+  color: var(--a);
+  font-family: var(--font-latin);
+  cursor: pointer;
+  transition: background-color 140ms ease, scale 140ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.ans:hover {
+  background: color-mix(in srgb, var(--a) 22%, transparent);
+  scale: 1.04;
+}
+.ans:active {
+  scale: 0.94;
+}
+.ans-again { --a: var(--st-0); }
+.ans-hard { --a: var(--st-1); }
+.ans-good { --a: var(--st-2); }
+.ans-easy { --a: var(--ans-blue); }
+.ans-when {
+  font-size: 10.5px;
+  opacity: 0.85;
+  font-variant-numeric: tabular-nums;
+}
+.ans-label {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+/* the answer you gave, stamped for a moment as the next card comes in */
+.review-stamp {
+  --a: var(--st-2);
+  position: absolute;
+  z-index: 3;
+  top: 0.4rem;
+  left: 50%;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  background: var(--a);
+  color: var(--bg-deep);
+  font-family: var(--font-latin);
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  pointer-events: none;
+  animation: stamp 900ms cubic-bezier(0.22, 0.9, 0.3, 1) both;
+}
+.review-stamp.ans-again { --a: var(--st-0); }
+.review-stamp.ans-hard { --a: var(--st-1); }
+.review-stamp.ans-easy { --a: var(--ans-blue); }
+@keyframes stamp {
+  0% { opacity: 0; transform: translate(-50%, 6px) scale(0.8); }
+  18% { opacity: 1; transform: translate(-50%, 0) scale(1.06); }
+  30% { transform: translate(-50%, 0) scale(1); }
+  70% { opacity: 1; }
+  100% { opacity: 0; transform: translate(-50%, -10px); }
+}
+
+/* ---------------------------------------------------------------- stars */
+.stars {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+}
+.star {
+  display: inline-grid;
+  place-items: center;
+  padding: 2px 1px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 160ms ease, scale 160ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.star svg {
+  fill: transparent;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linejoin: round;
+  opacity: 0.55;
+  transition: fill 160ms ease, opacity 160ms ease;
+}
+.star:hover {
+  scale: 1.15;
+}
+.star:focus {
+  outline: none;
+}
+.star:focus-visible {
+  outline: 1.5px solid var(--gold);
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+.star:hover svg {
+  opacity: 1;
+}
+.star.on {
+  color: var(--gold);
+}
+.star.on svg {
+  fill: currentColor;
+  opacity: 1;
+}
+/* hovering a star previews the stars up to it */
+.stars:hover .star:has(~ .star:hover) svg,
+.stars .star:hover svg {
+  opacity: 1;
+}
+.star-pop {
+  animation: star-pop 420ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@keyframes star-pop {
+  0% { scale: 0.4; rotate: -30deg; }
+  60% { scale: 1.35; rotate: 8deg; }
+  100% { scale: 1; rotate: 0deg; }
+}
+
+/* ---------------------------------------------------------------- hear the word */
+.speak-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 1.7rem;
+  height: 1.7rem;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease, scale 140ms ease;
+}
+.speak-btn:hover {
+  background: var(--gold-soft);
+  color: var(--fg);
+}
+.speak-btn:active {
+  scale: 0.9;
+}
+.speak-btn.busy {
+  color: var(--ink-red);
+  animation: speak-pulse 900ms ease-in-out infinite;
+}
+@keyframes speak-pulse {
+  50% { scale: 1.12; opacity: 0.6; }
+}
+.wp-say {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+/* ---------------------------------------------------------------- a level just set */
+/* the word pops in the text, in every place it appears */
+.tok-pop-a,
+.tok-pop-b {
+  display: inline-block;
+}
+.tok-pop-a { animation: tok-pop-a 480ms cubic-bezier(0.34, 1.56, 0.64, 1); }
+.tok-pop-b { animation: tok-pop-b 480ms cubic-bezier(0.34, 1.56, 0.64, 1); }
+@keyframes tok-pop-a {
+  0% { scale: 1; }
+  35% { scale: 1.16; box-shadow: 0 0 0 4px var(--gold-soft); }
+  100% { scale: 1; box-shadow: 0 0 0 0 transparent; }
+}
+@keyframes tok-pop-b {
+  0% { scale: 1; }
+  35% { scale: 1.16; box-shadow: 0 0 0 4px var(--gold-soft); }
+  100% { scale: 1; box-shadow: 0 0 0 0 transparent; }
+}
+/* the slider's thumb bumps, its caption pops, and a tick rises and fades */
+.slider.bump-a .slider-thumb { animation: thumb-bump-a 420ms cubic-bezier(0.34, 1.56, 0.64, 1); }
+.slider.bump-b .slider-thumb { animation: thumb-bump-b 420ms cubic-bezier(0.34, 1.56, 0.64, 1); }
+@keyframes thumb-bump-a {
+  40% { scale: 1.6; box-shadow: 0 0 0 5px color-mix(in srgb, var(--c) 25%, transparent); }
+}
+@keyframes thumb-bump-b {
+  40% { scale: 1.6; box-shadow: 0 0 0 5px color-mix(in srgb, var(--c) 25%, transparent); }
+}
+.slider-wrap {
+  position: relative;
+}
+.slider-cap.just {
+  animation: cap-pop 360ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@keyframes cap-pop {
+  from { scale: 0.7; opacity: 0.3; }
+}
+/* the tick sits just before the level's name, pops in and fades */
+.slider-saved {
+  display: inline-block;
+  margin-inline-end: 0.3em;
+  font-family: var(--font-latin);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--c);
+  pointer-events: none;
+  animation: saved-tick 1100ms ease-out both;
+}
+.slider-saved.alone {
+  position: absolute;
+  right: -0.9rem;
+  top: 50%;
+  margin-top: -0.55em;
+}
+@keyframes saved-tick {
+  0% { opacity: 0; transform: scale(0.3) rotate(-20deg); }
+  20% { opacity: 1; transform: scale(1.35) rotate(0deg); }
+  35% { transform: scale(1); }
+  75% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* ---------------------------------------------------------------- kept phrases */
+.note-item-meaning.pending {
+  opacity: 0.55;
+  font-style: italic;
+  animation: pending-fade 1.2s ease-in-out infinite alternate;
+}
+@keyframes pending-fade {
+  to { opacity: 0.3; }
+}
+.note-item-head .stars {
+  flex: none;
+}
+/* over a kept phrase, the hover note shows its meaning first */
+.hover-note {
+  margin-bottom: 0.45rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px dashed color-mix(in srgb, var(--sticky-fg) 25%, transparent);
+}
+.hover-note-quote {
+  font-size: 0.95rem;
+  color: var(--gold);
+}
+.hover-note-meaning {
+  font-size: 1rem;
+  line-height: 1.2;
+}
+.hover-note-comment {
+  margin-top: 0.15rem;
+  font-size: 0.9rem;
+  color: var(--sticky-muted);
+}
+
+/* the title's words: tappable like the text, in the title's own size and ink */
+.note-title .tok-unknown,
+.note-title .tok-not_known {
+  color: inherit;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .answers,
+  .review-stamp,
+  .star-pop,
+  .speak-btn.busy,
+  .tok-pop-a,
+  .tok-pop-b,
+  .slider.bump-a .slider-thumb,
+  .slider.bump-b .slider-thumb,
+  .slider-cap.just,
+  .slider-saved,
+  .note-item-meaning.pending {
+    animation: none;
+  }
 }

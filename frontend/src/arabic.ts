@@ -43,6 +43,27 @@ export function tokenize(sentence: string): Token[] {
   return (sentence.match(TOKEN) ?? []).map(rawToken);
 }
 
+/** The title as one sentence of words. A title saved with its own analysis is
+ *  used as it is (while it still matches the title); otherwise each word takes
+ *  the analysis of the same word in the body, and stands for itself if the
+ *  body does not have it. */
+export function titleSentence(title: string, stored: Sentence | null | undefined, body: Sentence[]): Sentence {
+  if (stored && stored.text === title && Array.isArray(stored.tokens)) return stored;
+  const seen = new Map<string, Token>();
+  for (const s of body)
+    for (const t of s.tokens) {
+      const k = dediac(t.word);
+      if (isWord(t) && (!seen.has(k) || (seen.get(k)!.pos === null && t.pos !== null))) seen.set(k, t);
+    }
+  return {
+    text: title,
+    tokens: tokenize(title).map((t) => {
+      const same = seen.get(dediac(t.word));
+      return same ? { ...same, word: t.word } : t;
+    }),
+  };
+}
+
 /** The distinct words (lemma keys) in a text. */
 export function wordKeys(sentences: Sentence[]): Set<string> {
   const keys = new Set<string>();

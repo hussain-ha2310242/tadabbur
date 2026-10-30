@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { HomeStats } from "./Profile";
 import { CorkBoard } from "./Board";
 import { api, Sentence, Tag, TextDetail, TextSummary, Token, WordInfo } from "../api";
@@ -8,6 +8,8 @@ import { analysisKey } from "../study";
 import { cleanGloss } from "../gloss";
 import { Icon } from "../icons";
 import { StatusSlider } from "../StatusSlider";
+import { SpeakButton, speak } from "../Speak";
+import { nextStars, Stars } from "../Stars";
 import { applyTextScale } from "../theme";
 
 type Cursor = { si: number; ti: number };
@@ -423,7 +425,7 @@ const TRACK = [
 function NoteTracker({ text, onCards }: { text: TextDetail; onCards?: () => void }) {
   const { counts, total } = useMemo(() => {
     const keys = new Set<string>();
-    for (const s of text.sentences) for (const t of s.tokens) if (isWordToken(t)) keys.add(t.lemma_key);
+    for (const s of [text.titleSentence, ...text.sentences]) for (const t of s.tokens) if (isWordToken(t)) keys.add(t.lemma_key);
     const c: Record<string, number> = { known: 0, easy: 0, hard: 0, not_known: 0, unmarked: 0 };
     keys.forEach((k) => {
       const st = text.statuses[k];
@@ -479,7 +481,16 @@ function NoteTracker({ text, onCards }: { text: TextDetail; onCards?: () => void
 
 /** The note's title as the heading of the reading panel, with its source and
  *  tags beneath. The pencil edits all three in place; the tick closes. */
-function NoteHead({ text, onChange }: { text: TextDetail; onChange: (t: TextDetail) => void }) {
+function NoteHead({
+  text,
+  onChange,
+  titleWords,
+}: {
+  text: TextDetail;
+  onChange: (t: TextDetail) => void;
+  /** the title drawn as words you can tap, like the body's */
+  titleWords?: ReactNode;
+}) {
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(text.title);
   const [err, setErr] = useState<string | null>(null);
@@ -494,9 +505,9 @@ function NoteHead({ text, onChange }: { text: TextDetail; onChange: (t: TextDeta
       return;
     }
     try {
-      await api.setTextTitle(text.id, t);
+      const r = await api.setTextTitle(text.id, t);
       setErr(null);
-      await reload();
+      onChange({ ...text, title: r.title, titleSentence: r.titleSentence });
     } catch (e) {
       setErr(String(e));
     }
@@ -525,7 +536,7 @@ function NoteHead({ text, onChange }: { text: TextDetail; onChange: (t: TextDeta
             aria-label="Title"
           />
         ) : (
-          <h2 className="ar note-title">{text.title}</h2>
+          <h2 className="ar note-title">{titleWords ?? text.title}</h2>
         )}
         <button
           onClick={() => setEditing((v) => !v)}
@@ -697,7 +708,8 @@ const SHORTCUTS: [string, string][] = [
   ["→ / k", "previous word"],
   ["↓ / ↑", "next / previous sentence"],
   ["1 2 3 4", "tag: Not known · Hard · Easy · Known"],
-  ["i", "cycle importance * ** ***"],
+  ["i", "stars: none, 1, 2, 3"],
+  ["h", "hear the word"],
   ["d", "load word details (Fanar)"],
   ["p / Space", "play sentence audio"],
   ["drag", "select words (whole words, across sentences)"],
@@ -738,7 +750,11 @@ function ReadingView({
   const [noteOpen, setNoteOpen] = useState(false);
   const dragFrom = useRef<Cursor | null>(null);
   const dragMoved = useRef(false);
+  // stars you set while reading; the rest come with the text
   const [wordImportance, setWordImportance] = useState<Record<string, number>>({});
+  const starsOf = (key: string) => wordImportance[key] ?? text.importance?.[key] ?? 0;
+  // the word whose level was just set: its copies in the text pop once
+  const [pulse, setPulse] = useState<{ key: string; n: number } | null>(null);
   const [detailsFor, setDetailsFor] = useState<string | null>(null);
   const [showHelp, setShowHelp] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -776,7 +792,10 @@ function ReadingView({
     meaningfulIdx.includes(sIdx) ? sIdx : meaningfulIdx.find((i) => i > sIdx) ?? meaningfulIdx[meaningfulIdx.length - 1] ?? 0;
   const [arScale, setArScale] = useState(1);
   const SCALES = [0.85, 1, 1.2, 1.4];
-  const [hover, setHover] = useState<{ token: Token; si: number; rect: DOMRect } | null>(null);
+  const [hover, setHover] = useState<{ token: Token; si: number; ti: number; rect: DOMRect } | null>(null);
+
+  /** A sentence by index; -1 is the title. */
+  const sentenceOf = (si: number): Sentence => (si === -1 ? text.titleSentence : text.sentences[si]);
 
   // precedence: your edit > Claude's study data > CAMeL/Fanar
   const analysisWords = text.analysis?.words ?? {};
@@ -799,7 +818,7 @@ function ReadingView({
     onChange({ ...text, overrides: ov });
   }
 
-  const current: Token | null = cursor ? viewToken(text.sentences[cursor.si].tokens[cursor.ti]) : null;
+  const current: Token | null = cursor ? viewToken(sentenceOf(cursor.si).tokens[cursor.ti]) : null;
 
   const flash = (msg: string) => {
     setNotice(msg);
@@ -823,9 +842,9 @@ function ReadingView({
   const move = useCallback(
     (dir: 1 | -1) => {
       const flat: Cursor[] = [];
-      text.sentences.forEach((s, si) =>
+      [text.titleSentence, ...text.sentences].forEach((s, i) =>
         s.tokens.forEach((t, ti) => {
-          if (isWordToken(t)) flat.push({ si, ti });
+          if (isWordToken(t)) flat.push({ si: i - 1, ti });
         }),
       );
       if (flat.length === 0) return;
@@ -862,39 +881,53 @@ function ReadingView({
     api.saveSettings({ ar_text_scale: String(v) }).catch(() => {});
   }
 
+  // the level shows at once (the word pops); saving follows, and is undone if it fails
   async function tag(status: string) {
     if (!current) return;
+    const key = current.lemma_key;
+    const was = text.statuses[key];
+    if (was === status) return;
     setError(null);
+    setPulse((p) => ({ key, n: (p?.n ?? 0) + 1 }));
+    onChange({ ...text, statuses: { ...text.statuses, [key]: status } });
     try {
-      await api.addVocab({
-        lemma_key: current.lemma_key,
-        display: current.lemma,
-        root: current.root,
-        pos: current.pos,
-        gloss: current.gloss,
-        status,
-        importance: wordImportance[current.lemma_key] ?? 0,
-      });
-      onChange({ ...text, statuses: { ...text.statuses, [current.lemma_key]: status } });
+      if (was) await api.updateVocab(key, { status });
+      else
+        await api.addVocab({
+          lemma_key: key,
+          display: current.lemma,
+          root: current.root,
+          pos: current.pos,
+          gloss: current.gloss,
+          status,
+          importance: starsOf(key),
+        });
     } catch (e) {
+      const back = { ...text.statuses };
+      if (was) back[key] = was;
+      else delete back[key];
+      onChange({ ...text, statuses: back });
       setError(String(e));
     }
   }
 
-  async function cycleImportance() {
+  // stars are kept with the word once it is in your wallet; before that they
+  // wait here and go in with its first level
+  async function setStars(n: number) {
     if (!current) return;
-    // unset reads as one star; the stars then loop 1 → 2 → 3 → 1
-    const shown = Math.max(1, wordImportance[current.lemma_key] ?? 0);
-    const next = (shown % 3) + 1;
-    setWordImportance((m) => ({ ...m, [current.lemma_key]: next }));
-    if (text.statuses[current.lemma_key]) {
+    const key = current.lemma_key;
+    setWordImportance((m) => ({ ...m, [key]: n }));
+    if (text.statuses[key]) {
       try {
-        await api.updateVocab(current.lemma_key, { importance: next });
+        await api.updateVocab(key, { importance: n });
       } catch (e) {
         setError(String(e));
       }
     }
   }
+
+  const sayWord = () =>
+    current && speak(current.diac || current.word).catch((e) => setError(String(e instanceof Error ? e.message : e)));
 
   // the selection in reading order, and its words
   const selRange = useMemo<[Cursor, Cursor] | null>(
@@ -906,7 +939,7 @@ function ReadingView({
     const [a, b] = selRange;
     const words: string[] = [];
     for (let si = a.si; si <= b.si; si++) {
-      const toks = text.sentences[si].tokens;
+      const toks = sentenceOf(si).tokens;
       const lo = si === a.si ? a.ti : 0;
       const hi = si === b.si ? b.ti : toks.length - 1;
       for (let ti = lo; ti <= hi; ti++) words.push(toks[ti].word);
@@ -920,7 +953,7 @@ function ReadingView({
     const set = new Set<string>();
     for (const n of notes)
       for (let si = n.start_si; si <= n.end_si; si++) {
-        const toks = text.sentences[si]?.tokens ?? [];
+        const toks = (si === -1 ? text.titleSentence : text.sentences[si])?.tokens ?? [];
         const lo = si === n.start_si ? n.start_ti : 0;
         const hi = si === n.end_si ? n.end_ti : toks.length - 1;
         for (let ti = lo; ti <= hi; ti++) set.add(`${si}:${ti}`);
@@ -942,24 +975,42 @@ function ReadingView({
   // a: the whole sentence the word is in
   function selectSentence() {
     if (!cursor) return;
-    const toks = text.sentences[cursor.si].tokens;
+    const toks = sentenceOf(cursor.si).tokens;
     const first = toks.findIndex(isWordToken);
     let last = toks.length - 1;
     while (last > 0 && !isWordToken(toks[last])) last--;
     if (first >= 0) setSel({ a: { si: cursor.si, ti: first }, b: { si: cursor.si, ti: last } });
   }
 
+  // the latest text, for updates that land after a slow call
+  const textRef = useRef(text);
+  textRef.current = text;
+  const patchNotes = (f: (ns: Annotation[]) => Annotation[]) =>
+    onChange({ ...textRef.current, annotations: f(textRef.current.annotations ?? []) });
+
   // save the selection: with nothing written it is a phrase, with words a note.
-  // Either way the server asks the AI for its meaning, and it becomes a card.
+  // It is underlined at once; the AI's meaning for it arrives a moment later.
   async function addNote(comment: string) {
     if (!selRange) return;
     const [a, b] = selRange;
+    const quote = selQuote;
+    const context = Array.from({ length: b.si - a.si + 1 }, (_, i) => sentenceOf(a.si + i).text).join(" ");
     setError(null);
     try {
-      await api.createNote({ text_id: text.id, start_si: a.si, start_ti: a.ti, end_si: b.si, end_ti: b.ti, comment });
+      const note = await api.createNote({
+        text_id: text.id,
+        start_si: a.si,
+        start_ti: a.ti,
+        end_si: b.si,
+        end_ti: b.ti,
+        comment,
+        quote,
+      });
       clearSel();
-      onChange(await api.getText(text.id));
-      flash(comment ? "note saved with its meaning" : "phrase saved with its meaning");
+      patchNotes((ns) => [...ns, note]);
+      flash(comment ? "note saved" : "phrase saved");
+      const meaning = await api.noteMeaning(note.id, quote, context).catch(() => null);
+      if (meaning) patchNotes((ns) => ns.map((n) => (n.id === note.id ? { ...n, meaning } : n)));
     } catch (e) {
       setError(String(e));
     }
@@ -1047,7 +1098,8 @@ function ReadingView({
       else if (k === "2") tag("hard");
       else if (k === "3") tag("easy");
       else if (k === "4") tag("known");
-      else if (k === "i") cycleImportance();
+      else if (k === "i" && current) setStars(nextStars(starsOf(current.lemma_key)));
+      else if (k === "h") sayWord();
       else if (k === "d" && current) setDetailsFor(current.lemma_key);
       else if ((k === "p" || k === " ") && cursor) { e.preventDefault(); playSentence(cursor.si); }
       else if (k === "v" || k === "Enter") { e.preventDefault(); anchorSelection(); }
@@ -1075,7 +1127,7 @@ function ReadingView({
   );
 
   const renderSentence = (si: number, twin = false) => {
-    const s = text.sentences[si];
+    const s = sentenceOf(si);
     return (
       <span>
         {s.tokens.map((tok, ti) => {
@@ -1084,6 +1136,7 @@ function ReadingView({
           const inSel =
             !!selRange && cmpPos({ si, ti }, selRange[0]) >= 0 && cmpPos({ si, ti }, selRange[1]) <= 0;
           const isNoted = noted.has(`${si}:${ti}`);
+          const pops = !!pulse && isWordToken(tok) && tok.lemma_key === pulse.key;
           // the hidden copy that sizes the card carries no position, so it is never hit
           const pos = twin ? {} : { "data-si": si, "data-ti": ti };
           return (
@@ -1105,13 +1158,16 @@ function ReadingView({
                 }}
                 onMouseEnter={(e) =>
                   isWordToken(tok) &&
-                  setHover({ token: viewToken(tok), si, rect: e.currentTarget.getBoundingClientRect() })
+                  setHover({ token: viewToken(tok), si, ti, rect: e.currentTarget.getBoundingClientRect() })
                 }
                 onMouseLeave={() => setHover(null)}
                 className={
                   st === "punc"
                     ? ""
-                    : `tok tok-${st}` + (isCur ? " tok-selected" : "") + (isNoted ? " tok-note" : "")
+                    : `tok tok-${st}` +
+                      (isCur ? " tok-selected" : "") +
+                      (isNoted ? " tok-note" : "") +
+                      (pops ? ` tok-pop-${pulse.n % 2 ? "a" : "b"}` : "")
                 }
               >
                 {tok.word}
@@ -1119,7 +1175,7 @@ function ReadingView({
             </span>
           );
         })}
-        {!twin && (
+        {!twin && si >= 0 && (
           <button
             onClick={() => playSentence(si)}
             title={playing === si ? "Pause" : "Listen"}
@@ -1278,7 +1334,7 @@ function ReadingView({
 
       <div className={`mt-6 ${focusMode ? "bento" : "grid gap-6 lg:grid-cols-[minmax(0,1fr)_230px]"}`}>
         <div className={focusMode ? "wrap-text" : "min-w-0 lg:order-1"}>
-          {focusMode && <NoteHead text={text} onChange={onChange} />}
+          {focusMode && <NoteHead text={text} onChange={onChange} titleWords={renderSentence(-1)} />}
           {focusMode ? (
             <div className="sent-wrap">
               <button
@@ -1326,7 +1382,7 @@ function ReadingView({
             </div>
           ) : (
             <div className="frame tile-sentence ar rounded-sm p-8 leading-loose" style={{ fontSize: "calc(1.3rem * var(--ar-scale, 1))" }}>
-              <NoteHead text={text} onChange={onChange} />
+              <NoteHead text={text} onChange={onChange} titleWords={renderSentence(-1)} />
               {visibleSentences.map((si) => (
                 <span key={si}>{renderSentence(si)}</span>
               ))}
@@ -1343,10 +1399,11 @@ function ReadingView({
                 key={current.lemma_key}
                 token={current}
                 status={text.statuses[current.lemma_key]}
-                importance={wordImportance[current.lemma_key] ?? 0}
+                importance={starsOf(current.lemma_key)}
                 autoDetails={detailsFor === current.lemma_key}
                 onStatus={tag}
-                onImportance={cycleImportance}
+                onImportance={setStars}
+                onError={setError}
                 onEditMeaning={(g, r) => saveMeaning(current.lemma_key, g, r)}
                 source={
                   text.overrides?.[current.lemma_key]
@@ -1360,19 +1417,22 @@ function ReadingView({
               {notes.some((n) => covers(n, cursor)) && (
                 <NotesHere
                   notes={notes.filter((n) => covers(n, cursor))}
-                  onChanged={async () => onChange(await api.getText(text.id))}
+                  onUpdated={(note) => patchNotes((ns) => ns.map((n) => (n.id === note.id ? note : n)))}
+                  onDeleted={(id) => patchNotes((ns) => ns.filter((n) => n.id !== id))}
                   onError={(e) => setError(e)}
                 />
               )}
               {!focusMode && (
               <SentenceCard
-                sentence={text.sentences[cursor.si]}
+                sentence={sentenceOf(cursor.si)}
                 compact={false}
-                preset={text.analysis?.sentences?.[String(cursor.si)]}
+                preset={cursor.si >= 0 ? text.analysis?.sentences?.[String(cursor.si)] : undefined}
                 highlighted={new Set([cursor.ti])}
                 context={
-                  `Article: ${text.title}` +
-                  (cursor.si > 0 ? ` - previous sentence: ${text.sentences[cursor.si - 1].text}` : "")
+                  cursor.si < 0
+                    ? "This is the title of an article."
+                    : `Article: ${text.title}` +
+                      (cursor.si > 0 ? ` - previous sentence: ${text.sentences[cursor.si - 1].text}` : "")
                 }
               />
               )}
@@ -1401,7 +1461,8 @@ function ReadingView({
       {hover && (
         <HoverCard
           token={hover.token}
-          translation={text.analysis?.sentences?.[String(hover.si)]}
+          translation={hover.si >= 0 ? text.analysis?.sentences?.[String(hover.si)] : undefined}
+          notes={notes.filter((n) => covers(n, { si: hover.si, ti: hover.ti }))}
           rect={hover.rect}
         />
       )}
@@ -1515,41 +1576,45 @@ function SelectionBar({
  *  (edit in place, saved when you leave it), its level as a card, and delete. */
 function NotesHere({
   notes,
-  onChanged,
+  onUpdated,
+  onDeleted,
   onError,
 }: {
   notes: Annotation[];
-  onChanged: () => Promise<void>;
+  onUpdated: (n: Annotation) => void;
+  onDeleted: (id: number) => void;
   onError: (e: string) => void;
 }) {
   return (
     <div className="notes-here">
       {notes.map((n) => (
-        <NoteItem key={n.id} note={n} onChanged={onChanged} onError={onError} />
+        <NoteItem key={n.id} note={n} onUpdated={onUpdated} onDeleted={onDeleted} onError={onError} />
       ))}
     </div>
   );
 }
 
+/** One phrase or note: changes show at once and are saved behind them. */
 function NoteItem({
   note,
-  onChanged,
+  onUpdated,
+  onDeleted,
   onError,
 }: {
   note: Annotation;
-  onChanged: () => Promise<void>;
+  onUpdated: (n: Annotation) => void;
+  onDeleted: (id: number) => void;
   onError: (e: string) => void;
 }) {
   const [comment, setComment] = useState(note.comment);
-  const [status, setStatus] = useState(note.status);
   useEffect(() => setComment(note.comment), [note.comment]);
-  useEffect(() => setStatus(note.status), [note.status]);
 
-  async function save(patch: { comment?: string; status?: string }) {
+  async function save(patch: { comment?: string; status?: string; importance?: number }) {
+    onUpdated({ ...note, ...patch });
     try {
-      await api.updateNote(note.id, patch);
-      await onChanged();
+      onUpdated(await api.updateNote(note.id, patch));
     } catch (e) {
+      onUpdated(note);
       onError(String(e));
     }
   }
@@ -1561,12 +1626,13 @@ function NoteItem({
         <span className="ar note-item-quote" dir="rtl" title={note.quote}>
           {note.quote}
         </span>
+        <Stars value={note.importance ?? 0} onChange={(n) => save({ importance: n })} size={12} title="Importance" />
         <button
           onClick={async () => {
             if (!window.confirm("Delete this? Its card goes too.")) return;
             try {
               await api.deleteNote(note.id);
-              await onChanged();
+              onDeleted(note.id);
             } catch (e) {
               onError(String(e));
             }
@@ -1578,7 +1644,11 @@ function NoteItem({
           <Icon name="close" size={10} />
         </button>
       </div>
-      {note.meaning && <p className="note-item-meaning hand">{note.meaning}</p>}
+      {note.meaning ? (
+        <p className="note-item-meaning hand">{note.meaning}</p>
+      ) : (
+        <p className="note-item-meaning hand pending">finding the meaning…</p>
+      )}
       <textarea
         value={comment}
         rows={comment ? 2 : 1}
@@ -1590,14 +1660,7 @@ function NoteItem({
         className="note-item-text hand"
         aria-label="Note"
       />
-      <StatusSlider
-        value={status}
-        hideCaption
-        onChange={(s) => {
-          setStatus(s);
-          save({ status: s });
-        }}
-      />
+      <StatusSlider value={note.status} hideCaption onChange={(s) => save({ status: s })} />
     </div>
   );
 }
@@ -1651,6 +1714,7 @@ function WordPanel({
   autoDetails,
   onStatus,
   onImportance,
+  onError,
   onEditMeaning,
   overridden,
   source,
@@ -1660,7 +1724,8 @@ function WordPanel({
   importance: number;
   autoDetails: boolean;
   onStatus: (s: string) => void;
-  onImportance: () => void;
+  onImportance: (n: number) => void;
+  onError: (e: string) => void;
   onEditMeaning: (gloss: string | null, root: string | null) => Promise<void>;
   overridden: boolean;
   source: "edited" | "claude" | "auto";
@@ -1755,16 +1820,12 @@ function WordPanel({
       <div className="wp-head">
         <div className="wp-meta">
           {source !== "auto" && <span className={`src src-${source}`}>{source}</span>}
-          <button
-            onClick={onImportance}
-            title="Importance (i): * ** ***"
-            aria-label="Cycle importance"
-            className={`wp-imp ${importance > 0 ? "on" : ""}`}
-          >
-            {"*".repeat(Math.max(1, importance))}
-          </button>
+          <Stars value={importance} onChange={onImportance} />
         </div>
-        <span className="ar wp-word">{token.diac}</span>
+        <span className="wp-say">
+          <SpeakButton text={token.diac || token.word} onError={onError} />
+          <span className="ar wp-word">{token.diac}</span>
+        </span>
       </div>
 
       <div className="wp-line">
@@ -2066,7 +2127,19 @@ function StudyPanel({
   );
 }
 
-function HoverCard({ token, translation, rect }: { token: Token; translation?: string; rect: DOMRect }) {
+/** What a word means, under the pointer. Over a kept phrase or note, its
+ *  meaning (and your note) come first. */
+function HoverCard({
+  token,
+  translation,
+  notes = [],
+  rect,
+}: {
+  token: Token;
+  translation?: string;
+  notes?: Annotation[];
+  rect: DOMRect;
+}) {
   const half = 150;
   const left = Math.min(Math.max(rect.left + rect.width / 2, half), window.innerWidth - half);
   // flip below the word when there is no room above it
@@ -2077,6 +2150,13 @@ function HoverCard({ token, translation, rect }: { token: Token; translation?: s
       className="sticky hover-card"
       style={{ left, top, transform: above ? "translate(-50%, -100%)" : "translate(-50%, 0)" }}
     >
+      {notes.map((n) => (
+        <div key={n.id} className="hover-note">
+          <div className="ar hover-note-quote" dir="rtl">{n.quote}</div>
+          <div className="hand hover-note-meaning">{n.meaning || "finding the meaning…"}</div>
+          {n.comment && <div className="hand hover-note-comment" dir="auto">{n.comment}</div>}
+        </div>
+      ))}
       <div className="ar text-base leading-snug" style={{ color: "var(--ink-red)" }}>
         {token.diac || token.word}
       </div>

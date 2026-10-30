@@ -22,6 +22,7 @@ create table public.texts (
   title text not null,
   body text not null,
   tokens_json jsonb not null, -- [{text, tokens: [{word, diac, lemma, lemma_key, root, pos, gloss}]}]
+  title_tokens jsonb, -- the title's words, analysed like one sentence: {text, tokens}
   importance smallint not null default 2 check (importance between 1 and 3),
   source text,
   url text check (url is null or url ~* '^https?://'),
@@ -98,6 +99,7 @@ create table public.annotations (
   meaning text,
   comment text not null default '',
   status text not null default 'not_known' check (status in ('not_known', 'hard', 'easy', 'known')),
+  importance smallint not null default 0 check (importance between 0 and 3),
   card_json jsonb,
   due timestamptz,
   created_at timestamptz not null default now()
@@ -257,7 +259,23 @@ returns jsonb language sql stable security invoker set search_path = '' as $$
      and w.lemma_key in (select jsonb_array_elements_text(t.word_keys) from public.texts t where t.id = p_text_id)
 $$;
 
--- every word of a text into the wallet as known
+-- your level and stars for each word of one text, the title included:
+-- { lemma_key: { "s": status, "i": importance } }
+create or replace function public.text_marks(p_text_id bigint)
+returns jsonb language sql stable security invoker set search_path = '' as $$
+  with keys as (
+    select jsonb_array_elements_text(t.word_keys) k from public.texts t where t.id = p_text_id
+    union
+    select jsonb_path_query(t.title_tokens,
+             '$.tokens[*] ? (!exists(@.pos ? (@ == "punc" || @ == "digit")) && exists(@.lemma_key ? (@ != ""))).lemma_key') #>> '{}'
+      from public.texts t where t.id = p_text_id and t.title_tokens is not null
+  )
+  select coalesce(jsonb_object_agg(w.lemma_key, jsonb_build_object('s', w.status, 'i', w.importance)), '{}'::jsonb)
+    from public.words w
+   where w.user_id = auth.uid() and w.lemma_key in (select k from keys)
+$$;
+
+-- every word of a text into the wallet as known, the title's words too
 create or replace function public.mark_all_known(p_text_id bigint)
 returns int language plpgsql security invoker set search_path = '' as $$
 declare n int;
@@ -266,7 +284,8 @@ begin
   select distinct on (tok->>'lemma_key')
          auth.uid(), tok->>'lemma_key', coalesce(tok->>'lemma', tok->>'word'), tok->>'root', tok->>'pos', tok->>'gloss', 'known'
     from public.texts t,
-         jsonb_path_query(t.tokens_json,
+         jsonb_path_query(
+           case when t.title_tokens is null then t.tokens_json else t.tokens_json || jsonb_build_array(t.title_tokens) end,
            '$[*].tokens[*] ? (!exists(@.pos ? (@ == "punc" || @ == "digit")) && exists(@.lemma_key ? (@ != "")))') tok
    where t.id = p_text_id and t.user_id = auth.uid()
   on conflict (user_id, lemma_key) do update set status = 'known';
@@ -295,11 +314,13 @@ $$;
 revoke execute on function public.log_activity(text, int) from public, anon;
 revoke execute on function public.texts_overview() from public, anon;
 revoke execute on function public.text_statuses(bigint) from public, anon;
+revoke execute on function public.text_marks(bigint) from public, anon;
 revoke execute on function public.mark_all_known(bigint) from public, anon;
 revoke execute on function public.study_counts() from public, anon;
 grant execute on function public.log_activity(text, int) to authenticated;
 grant execute on function public.texts_overview() to authenticated;
 grant execute on function public.text_statuses(bigint) to authenticated;
+grant execute on function public.text_marks(bigint) to authenticated;
 grant execute on function public.mark_all_known(bigint) to authenticated;
 grant execute on function public.study_counts() to authenticated;
 

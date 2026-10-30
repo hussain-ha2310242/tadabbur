@@ -2,9 +2,9 @@
  *  belongs to the signed-in person, enforced by row level security); the few
  *  steps that need the Fanar key run as Netlify functions under /api. */
 
-import { createEmptyCard, fsrs, Rating, type Card, type Grade, type State } from "ts-fsrs";
+import { createEmptyCard, fsrs, Rating, State, type Card, type Grade } from "ts-fsrs";
 import { supabase } from "./supabase";
-import { dediac, isWord, splitSentences, tokenize, wordKeys, type Sentence, type Token } from "./arabic";
+import { dediac, isWord, splitSentences, titleSentence, tokenize, wordKeys, type Sentence, type Token } from "./arabic";
 import { analysisKey, buildPrompt, parseAnalysis } from "./study";
 
 export type { Sentence, Token };
@@ -38,8 +38,12 @@ export type Analysis = {
 export type TextDetail = {
   id: number;
   title: string;
+  /** the title's words, tappable like the body's; in the reader it sits at sentence index -1 */
+  titleSentence: Sentence;
   sentences: Sentence[];
   statuses: Record<string, string>;
+  /** your stars on this text's words (only words with stars) */
+  importance: Record<string, number>;
   source?: string | null;
   url?: string | null;
   annotations?: Annotation[];
@@ -59,6 +63,7 @@ export type DueWord = {
   importance: number;
   status: string;
   due: string | null;
+  card_json?: unknown; // the card's schedule, so the deck can show what each answer does
   kind?: "note"; // a selection on a text, not a word: display is the selection, gloss its meaning
   comment?: string; // your note on it, if any
   before?: string; // the rest of the note's sentence, around the selection
@@ -78,6 +83,7 @@ export type Annotation = {
   meaning: string | null; // the AI's meaning of the selection as a whole
   comment: string; // your note; empty means a phrase
   status: string;
+  importance: number; // stars, 0-3
   due: string | null;
   created_at: string | null;
   title?: string; // in the full list: the text it belongs to
@@ -209,12 +215,19 @@ const logActivity = (kind: "reviews" | "marks" | "texts") =>
 // ---- cards: FSRS, the same schedule the old backend used ----
 
 const scheduler = fsrs({ enable_fuzz: true });
-const RATING: Record<string, Grade> = {
-  not_known: Rating.Again,
+
+/** Anki's four answers. */
+export type Answer = "again" | "hard" | "good" | "easy";
+const ANSWERS: Answer[] = ["again", "hard", "good", "easy"];
+const RATING: Record<Answer, Grade> = {
+  again: Rating.Again,
   hard: Rating.Hard,
-  easy: Rating.Good,
-  known: Rating.Easy,
+  good: Rating.Good,
+  easy: Rating.Easy,
 };
+/** The level a card shows after an answer. "known" is never set by the deck:
+ *  it takes a word out of review, which only you decide, in the reader. */
+const STATUS_AFTER: Record<Answer, string> = { again: "not_known", hard: "hard", good: "easy", easy: "easy" };
 
 function loadCard(j: unknown): Card {
   const c = (j ?? {}) as Record<string, unknown>;
@@ -239,10 +252,43 @@ const saveCard = (c: Card) => ({
   last_review: c.last_review ? c.last_review.toISOString() : null,
 });
 
-/** A card after a review at the given level. */
-function nextCard(cardJson: unknown, status: string) {
-  const { card } = scheduler.next(loadCard(cardJson), new Date(), RATING[status]);
-  return { card_json: saveCard(card), due: card.due.toISOString() };
+/** A card after an answer: its new schedule and level. */
+export type Scheduled = { card_json: ReturnType<typeof saveCard>; due: string; status: string };
+
+function nextCard(cardJson: unknown, answer: Answer, now = new Date()): Scheduled {
+  const { card } = scheduler.next(loadCard(cardJson), now, RATING[answer]);
+  return { card_json: saveCard(card), due: card.due.toISOString(), status: STATUS_AFTER[answer] };
+}
+
+/** How long until the card comes back, the way Anki writes it: <1m, 10m, 3h, 4d, 1.5mo, 2y. */
+function interval(ms: number): string {
+  const m = ms / 60000;
+  if (m < 1) return "<1m";
+  if (m < 60) return `${Math.round(m)}m`;
+  const h = m / 60;
+  if (h < 24) return `${Math.round(h)}h`;
+  const d = h / 24;
+  if (d < 30) return `${Math.round(d)}d`;
+  if (d < 365) return `${+(d / 30).toFixed(1)}mo`;
+  return `${+(d / 365).toFixed(1)}y`;
+}
+
+/** What each answer would do to this card now. The deck saves the very
+ *  outcome it showed, so the label on a button is what you get. */
+function preview(cardJson: unknown, now = new Date()): Record<Answer, Scheduled & { label: string }> {
+  const r = scheduler.repeat(loadCard(cardJson), now);
+  return Object.fromEntries(
+    ANSWERS.map((a) => {
+      const c = r[RATING[a]].card;
+      return [a, { card_json: saveCard(c), due: c.due.toISOString(), status: STATUS_AFTER[a], label: interval(c.due.getTime() - now.getTime()) }];
+    }),
+  ) as Record<Answer, Scheduled & { label: string }>;
+}
+
+/** Anki's three counts: new cards, cards being learned (short steps), reviews. */
+function cardKind(cardJson: unknown): "new" | "learning" | "review" {
+  const s = loadCard(cardJson).state;
+  return s === State.New ? "new" : s === State.Review ? "review" : "learning";
 }
 
 function newCard() {
@@ -360,11 +406,27 @@ async function analyseForms(words: string[]): Promise<Record<string, Form>> {
   return out;
 }
 
-async function analyseText(body: string, withFanar: boolean): Promise<Sentence[]> {
+/** The body's sentences and the title, each word analysed by Fanar (in the same batches). */
+async function analyseText(body: string, withFanar: boolean, title = ""): Promise<{ sentences: Sentence[]; title: Sentence }> {
   const sentences = splitSentences(body).map((text) => ({ text, tokens: tokenize(text) }));
   if (!sentences.length) throw new Error("empty text");
-  if (!withFanar) return sentences;
+  const head = { text: title, tokens: tokenize(title) };
+  if (withFanar) await fillForms([...sentences, head]);
+  return { sentences, title: head };
+}
+
+/** The title alone, analysed: words the body already has are reused; the rest
+ *  go to Fanar. Never fails: a word Fanar cannot reach stands for itself. */
+async function analyseTitle(title: string, body: Sentence[]): Promise<Sentence> {
+  const head = titleSentence(title, null, body);
+  if (head.tokens.some((t) => t.pos === null)) await fillForms([head]).catch(() => {});
+  return head;
+}
+
+/** Fill in each not-yet-analysed word (pos null) from Fanar, in place. */
+async function fillForms(sentences: Sentence[]): Promise<void> {
   const words = [...new Set(sentences.flatMap((s) => s.tokens.filter((t) => t.pos === null).map((t) => t.word)))];
+  if (!words.length) return;
   const forms = await analyseForms(words);
   for (const s of sentences) {
     s.tokens = s.tokens.map((t): Token => {
@@ -381,10 +443,11 @@ async function analyseText(body: string, withFanar: boolean): Promise<Sentence[]
       };
     });
   }
-  return sentences;
 }
 
-type NoteRow = Omit<Annotation, "title"> & { texts?: { title: string; tokens_json?: Sentence[] } | null };
+type NoteRow = Omit<Annotation, "title"> & {
+  texts?: { title: string; tokens_json?: Sentence[]; title_tokens?: Sentence | null } | null;
+};
 
 const noteOf = (r: NoteRow, title?: string): Annotation => ({
   id: r.id,
@@ -397,18 +460,27 @@ const noteOf = (r: NoteRow, title?: string): Annotation => ({
   meaning: r.meaning,
   comment: r.comment,
   status: r.status,
+  importance: r.importance ?? 0,
   due: r.due,
   created_at: r.created_at,
   ...(title !== undefined ? { title } : {}),
 });
 
-const NOTE_COLS = "id, text_id, start_si, start_ti, end_si, end_ti, quote, meaning, comment, status, due, created_at";
+const NOTE_COLS = "id, text_id, start_si, start_ti, end_si, end_ti, quote, meaning, comment, status, importance, due, created_at";
 
-/** The words around a selection in its first and last sentence. */
-function spanParts(sentences: Sentence[], n: Pick<Annotation, "start_si" | "start_ti" | "end_si" | "end_ti">) {
+/** A text's sentence by index; -1 is the title. */
+const sentenceAt = (sentences: Sentence[], title: Sentence | null | undefined, si: number) =>
+  si === -1 ? title ?? undefined : sentences[si];
+
+/** The words around a selection in its first and last sentence (-1 is the title). */
+function spanParts(
+  sentences: Sentence[],
+  n: Pick<Annotation, "start_si" | "start_ti" | "end_si" | "end_ti">,
+  title?: Sentence | null,
+) {
   try {
-    const s0 = sentences[n.start_si].tokens;
-    const s1 = sentences[n.end_si].tokens;
+    const s0 = sentenceAt(sentences, title, n.start_si)!.tokens;
+    const s1 = sentenceAt(sentences, title, n.end_si)!.tokens;
     return {
       before: s0.slice(0, n.start_ti).map((t) => t.word).join(" "),
       after: s1.slice(n.end_ti + 1).map((t) => t.word).join(" "),
@@ -433,9 +505,9 @@ const calls = {
   },
 
   getText: async (id: number): Promise<TextDetail> => {
-    const [text, statuses, overrides, tags, notes, analysis] = await Promise.all([
-      supabase.from("texts").select("id, title, source, url, tokens_json").eq("id", id).maybeSingle(),
-      supabase.rpc("text_statuses", { p_text_id: id }),
+    const [text, marks, overrides, tags, notes, analysis] = await Promise.all([
+      supabase.from("texts").select("id, title, source, url, tokens_json, title_tokens").eq("id", id).maybeSingle(),
+      supabase.rpc("text_marks", { p_text_id: id }),
       all<{ lemma_key: string; gloss: string | null; root: string | null }>((a, b) =>
         supabase.from("meaning_overrides").select("lemma_key, gloss, root").range(a, b),
       ),
@@ -443,16 +515,26 @@ const calls = {
       supabase.from("annotations").select(NOTE_COLS).eq("text_id", id).order("start_si").order("start_ti"),
       supabase.from("note_analysis").select("analysis_json").eq("text_id", id).maybeSingle(),
     ]);
-    const t = must(text) as { id: number; title: string; source: string | null; url: string | null; tokens_json: Sentence[] } | null;
+    const t = must(text) as {
+      id: number;
+      title: string;
+      source: string | null;
+      url: string | null;
+      tokens_json: Sentence[];
+      title_tokens: Sentence | null;
+    } | null;
     if (!t) throw new Error("404: text not found");
     const tagRows = (must(tags) ?? []) as unknown as { tags: Tag | null }[];
+    const m = ((must(marks) as Record<string, { s: string; i: number }>) ?? {}) as Record<string, { s: string; i: number }>;
     return {
       id: t.id,
       title: t.title,
+      titleSentence: titleSentence(t.title, t.title_tokens, t.tokens_json),
       source: t.source,
       url: t.url,
       sentences: t.tokens_json,
-      statuses: (must(statuses) as Record<string, string>) ?? {},
+      statuses: Object.fromEntries(Object.entries(m).map(([k, v]) => [k, v.s])),
+      importance: Object.fromEntries(Object.entries(m).filter(([, v]) => v.i > 0).map(([k, v]) => [k, v.i])),
       overrides: Object.fromEntries(overrides.map((o) => [o.lemma_key, { gloss: o.gloss, root: o.root }])),
       tags: tagRows
         .map((r) => r.tags)
@@ -472,11 +554,12 @@ const calls = {
   ): Promise<{ id: number; sentences: number }> => {
     if (![1, 2, 3].includes(importance)) throw new Error("importance must be 1-3");
     const { source, url } = cleanSource(origin.source, origin.url);
-    const sentences = await analyseText(body, glosses === "fanar");
+    const name = clean(title, 200) || "Untitled";
+    const { sentences, title: head } = await analyseText(body, glosses === "fanar", name);
     const row = must(
       await supabase
         .from("texts")
-        .insert({ title: clean(title, 200) || "Untitled", body, tokens_json: sentences, importance, source, url })
+        .insert({ title: name, body, tokens_json: sentences, title_tokens: head, importance, source, url })
         .select("id")
         .single(),
     ) as { id: number };
@@ -488,16 +571,20 @@ const calls = {
    *  that was keyed by its written form (a note saved with Claude's reply)
    *  move to its dictionary form, unless that form is already in your wallet. */
   reanalyze: async (id: number): Promise<{ words: number; moved: number }> => {
-    const t = must(await supabase.from("texts").select("body, tokens_json").eq("id", id).maybeSingle()) as {
+    const t = must(await supabase.from("texts").select("title, body, tokens_json, title_tokens").eq("id", id).maybeSingle()) as {
+      title: string;
       body: string;
       tokens_json: Sentence[];
+      title_tokens: Sentence | null;
     } | null;
     if (!t) throw new Error("404: text not found");
-    const fresh = await analyseText(t.body, true);
+    const { sentences: fresh, title: head } = await analyseText(t.body, true, t.title);
+    const before = [...t.tokens_json, titleSentence(t.title, t.title_tokens, t.tokens_json)];
+    const after = [...fresh, head];
     const moves = new Map<string, string>();
-    t.tokens_json.forEach((s, si) =>
+    before.forEach((s, si) =>
       s.tokens.forEach((old, ti) => {
-        const now = fresh[si]?.tokens[ti];
+        const now = after[si]?.tokens[ti];
         if (now && old.pos === null && now.word === old.word && isWord(now) && now.lemma_key !== old.lemma_key) {
           moves.set(old.lemma_key, now.lemma_key);
         }
@@ -523,16 +610,21 @@ const calls = {
         );
       }
     }
-    must(await supabase.from("texts").update({ tokens_json: fresh }).eq("id", id));
-    return { words: wordKeys(fresh).size, moved };
+    must(await supabase.from("texts").update({ tokens_json: fresh, title_tokens: head }).eq("id", id));
+    return { words: wordKeys(after).size, moved };
   },
 
+  /** A new title, its words analysed so they can be tapped like the body's. */
   setTextTitle: async (id: number, title: string) => {
     const t = clean(title, 200);
     if (!t) throw new Error("the title cannot be empty");
-    const rows = must(await supabase.from("texts").update({ title: t }).eq("id", id).select("id"));
-    if (!rows?.length) throw new Error("404: text not found");
-    return { id, title: t };
+    const row = must(await supabase.from("texts").select("tokens_json").eq("id", id).maybeSingle()) as {
+      tokens_json: Sentence[];
+    } | null;
+    if (!row) throw new Error("404: text not found");
+    const head = await analyseTitle(t, row.tokens_json);
+    must(await supabase.from("texts").update({ title: t, title_tokens: head }).eq("id", id));
+    return { id, title: t, titleSentence: head };
   },
 
   setTextSource: async (id: number, source: string, url: string) => {
@@ -594,7 +686,7 @@ const calls = {
       // already in the wallet: only the level changes
       must(await supabase.from("words").update({ status }).eq("lemma_key", key));
     } else if (error) throw new Error(error.message);
-    await logActivity("marks");
+    void logActivity("marks");
     return { lemma_key: key, status, gloss };
   },
 
@@ -612,7 +704,7 @@ const calls = {
     if (!Object.keys(set).length) throw new Error("nothing to update");
     const rows = must(await supabase.from("words").update(set).eq("lemma_key", lemmaKey).select("lemma_key"));
     if (!rows?.length) throw new Error("404: word not in wallet");
-    if (patch.status !== undefined) await logActivity("marks");
+    if (patch.status !== undefined) void logActivity("marks");
     return { lemma_key: lemmaKey, ok: true };
   },
 
@@ -640,6 +732,9 @@ const calls = {
       )
     ).map((r) => noteOf(r, r.texts?.title ?? "")),
 
+  /** Keep a selection (sentence -1 is the title) as a phrase, or a note with
+   *  your comment. It is saved at once, without its meaning: noteMeaning adds
+   *  that after, so saving never waits on the AI. */
   createNote: async (n: {
     text_id: number;
     start_si: number;
@@ -647,31 +742,14 @@ const calls = {
     end_si: number;
     end_ti: number;
     comment: string;
+    quote: string;
   }): Promise<Annotation> => {
-    const t = must(
-      await supabase.from("texts").select("tokens_json").eq("id", n.text_id).maybeSingle(),
-    ) as { tokens_json: Sentence[] } | null;
-    if (!t) throw new Error("404: text not found");
-    const sentences = t.tokens_json;
     let a: [number, number] = [n.start_si, n.start_ti];
     let b: [number, number] = [n.end_si, n.end_ti];
     if (b[0] < a[0] || (b[0] === a[0] && b[1] < a[1])) [a, b] = [b, a];
-    const inside = (p: [number, number]) => p[0] >= 0 && p[0] < sentences.length && p[1] >= 0 && p[1] < sentences[p[0]].tokens.length;
-    if (!inside(a) || !inside(b)) throw new Error("the selection is outside the text");
-    const words: string[] = [];
-    for (let si = a[0]; si <= b[0]; si++) {
-      const toks = sentences[si].tokens;
-      const lo = si === a[0] ? a[1] : 0;
-      const hi = si === b[0] ? b[1] : toks.length - 1;
-      words.push(...toks.slice(lo, hi + 1).map((x) => x.word));
-    }
-    const quote = words.join(" ").trim();
+    if (a[0] < -1 || a[1] < 0 || b[1] < 0) throw new Error("the selection is outside the text");
+    const quote = clean(n.quote, 2000);
     if (!quote) throw new Error("empty selection");
-    const context = sentences.slice(a[0], b[0] + 1).map((s) => s.text).join(" ");
-    // the selection's meaning as a whole, read in its sentence; saved either way
-    const meaning = await serverJson<{ translation: string | null }>("translate", { text: quote, context, lenient: true })
-      .then((r) => r.translation)
-      .catch(() => null);
     const row = must(
       await supabase
         .from("annotations")
@@ -682,28 +760,41 @@ const calls = {
           end_si: b[0],
           end_ti: b[1],
           quote,
-          meaning,
           comment: (n.comment ?? "").trim().slice(0, 2000),
           ...newCard(),
         })
         .select(NOTE_COLS)
         .single(),
     ) as NoteRow;
-    await logActivity("marks");
+    void logActivity("marks");
     return noteOf(row);
   },
 
-  updateNote: async (id: number, patch: { comment?: string; status?: string }): Promise<Annotation> => {
+  /** The selection's meaning as a whole, read in its sentence, saved on the
+   *  note. Null when the AI could not be reached; the note stays either way. */
+  noteMeaning: async (id: number, quote: string, context: string): Promise<string | null> => {
+    const meaning = await serverJson<{ translation: string | null }>("translate", { text: quote, context, lenient: true })
+      .then((r) => r.translation)
+      .catch(() => null);
+    if (meaning) must(await supabase.from("annotations").update({ meaning }).eq("id", id));
+    return meaning;
+  },
+
+  updateNote: async (id: number, patch: { comment?: string; status?: string; importance?: number }): Promise<Annotation> => {
     const set: Record<string, unknown> = {};
     if (patch.comment !== undefined) set.comment = patch.comment.trim().slice(0, 2000);
     if (patch.status !== undefined) {
       if (!(STATUSES as readonly string[]).includes(patch.status)) throw new Error("bad status");
       set.status = patch.status;
     }
+    if (patch.importance !== undefined) {
+      if (![0, 1, 2, 3].includes(patch.importance)) throw new Error("importance must be 0-3");
+      set.importance = patch.importance;
+    }
     if (!Object.keys(set).length) throw new Error("nothing to update");
     const rows = must(await supabase.from("annotations").update(set).eq("id", id).select(NOTE_COLS)) as NoteRow[];
     if (!rows?.length) throw new Error("404: note not found");
-    if (patch.status !== undefined) await logActivity("marks");
+    if (patch.status !== undefined) void logActivity("marks");
     return noteOf(rows[0]);
   },
 
@@ -907,20 +998,20 @@ const calls = {
       }
     }
     const [words, notes] = await Promise.all([
-      all<WordRow>((a, b) =>
+      all<WordRow & { card_json: unknown }>((a, b) =>
         supabase
           .from("words")
-          .select(WORD_COLS)
+          .select(`${WORD_COLS}, card_json`)
           .neq("status", "known")
           .or(`due.is.null,due.lte."${now}"`)
           .order("importance", { ascending: false })
           .order("due", { ascending: true, nullsFirst: true })
           .range(a, b),
       ),
-      all<NoteRow>((a, b) =>
+      all<NoteRow & { card_json: unknown }>((a, b) =>
         supabase
           .from("annotations")
-          .select(`${NOTE_COLS}, texts(title, tokens_json)`)
+          .select(`${NOTE_COLS}, card_json, texts(title, tokens_json, title_tokens)`)
           .neq("status", "known")
           .or(`due.is.null,due.lte."${now}"`)
           .order("due", { ascending: true, nullsFirst: true })
@@ -932,7 +1023,7 @@ const calls = {
       .map((w) => {
         const { created_at: _created, ...rest } = walletOf(w);
         void _created;
-        return rest;
+        return { ...rest, card_json: w.card_json };
       });
     const noteCards: DueWord[] = notes
       .filter((n) => !scoped || textIds.has(n.text_id))
@@ -945,29 +1036,37 @@ const calls = {
         gloss: n.meaning ?? "",
         comment: n.comment,
         notes: n.texts?.title ?? null,
-        importance: 0,
+        importance: n.importance ?? 0,
         status: n.status,
         due: n.due,
+        card_json: n.card_json,
         kind: "note" as const,
-        ...spanParts(n.texts?.tokens_json ?? [], n),
+        ...spanParts(n.texts?.tokens_json ?? [], n, n.texts?.title_tokens),
       }));
     return [...wordCards, ...noteCards];
   },
 
-  /** The level you press is the grade; a note's card is scheduled like a word's. */
-  grade: async (lemmaKey: string, status: string) => {
-    if (!RATING[status]) throw new Error(`status must be one of ${STATUSES.join(", ")}`);
+  /** An answer in the deck (Anki's again, hard, good, easy); a note's card is
+   *  scheduled like a word's. `outcome` is the schedule the deck showed for that
+   *  answer (from preview); without it, it is worked out from the saved card. */
+  grade: async (lemmaKey: string, answer: Answer, outcome?: Scheduled) => {
+    if (!RATING[answer]) throw new Error(`answer must be one of ${ANSWERS.join(", ")}`);
     const isNote = lemmaKey.startsWith(NOTE_PREFIX);
     const table = isNote ? "annotations" : "words";
     const col = isNote ? "id" : "lemma_key";
     const key: string | number = isNote ? Number(lemmaKey.slice(NOTE_PREFIX.length)) : lemmaKey;
-    const row = must(await supabase.from(table).select("card_json").eq(col, key).maybeSingle()) as {
-      card_json: unknown;
-    } | null;
-    if (!row) throw new Error(isNote ? "404: note not found" : "404: word not in wallet");
-    const { card_json, due } = nextCard(row.card_json, status);
-    must(await supabase.from(table).update({ status, card_json, due }).eq(col, key));
-    await logActivity("reviews");
+    let next = outcome;
+    if (!next) {
+      const row = must(await supabase.from(table).select("card_json").eq(col, key).maybeSingle()) as {
+        card_json: unknown;
+      } | null;
+      if (!row) throw new Error(isNote ? "404: note not found" : "404: word not in wallet");
+      next = nextCard(row.card_json, answer);
+    }
+    const { status, card_json, due } = next;
+    const rows = must(await supabase.from(table).update({ status, card_json, due }).eq(col, key).select(col));
+    if (!rows?.length) throw new Error(isNote ? "404: note not found" : "404: word not in wallet");
+    void logActivity("reviews");
     return { lemma_key: lemmaKey, status, due };
   },
 
@@ -1040,8 +1139,11 @@ export const shared = {
   NOTE_PREFIX,
   HISTORY_DAYS,
   SETTINGS_DEFAULTS,
+  ANSWERS,
   newCard,
   nextCard,
+  preview,
+  cardKind,
   spanParts,
   streakOf,
   dayIn,
