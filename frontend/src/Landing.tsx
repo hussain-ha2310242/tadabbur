@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { authSettings, supabase, type AuthSettings } from "./supabase";
 import { startDemo } from "./demo";
 import { DeskSky } from "./DeskSky";
@@ -6,15 +6,48 @@ import { PaperDefs, PaperSheet } from "./Paper";
 
 const REPO = "https://github.com/hussain-ha2310242/tadabbur";
 
-/** A step counter for the small demos; still when the reader asks for less motion. */
+/** How long the demos play after the page opens. After that they rest, so an
+ *  open tab costs nothing (looping without end kept a laptop warm); hovering a
+ *  feature plays its demo again. */
+const PLAY_FOR = 30_000;
+const Playing = createContext(true);
+
+/** Whether the demos are still in their first half minute. */
+function useOpening(): boolean {
+  const [on, setOn] = useState(true);
+  useEffect(() => {
+    const id = window.setTimeout(() => setOn(false), PLAY_FOR);
+    return () => window.clearTimeout(id);
+  }, []);
+  return on;
+}
+
+/** A step counter for the small demos: it runs while the demo plays, and is
+ *  still when the reader asks for less motion. */
 function useTick(ms: number, steps: number): number {
   const [n, setN] = useState(0);
+  const playing = useContext(Playing);
   useEffect(() => {
-    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    if (!playing || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
     const id = window.setInterval(() => setN((x) => (x + 1) % steps), ms);
     return () => window.clearInterval(id);
-  }, [ms, steps]);
+  }, [ms, steps, playing]);
   return n;
+}
+
+/** One feature: its demo plays in the first half minute, and whenever it is hovered. */
+function Feature({ opening, children }: { opening: boolean; children: ReactNode }) {
+  const [hover, setHover] = useState(false);
+  const playing = opening || hover;
+  return (
+    <article
+      className={`lp-feature ${playing ? "" : "lp-rest"}`}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+    >
+      <Playing.Provider value={playing}>{children}</Playing.Provider>
+    </article>
+  );
 }
 
 /** Supabase's messages, said plainly. */
@@ -167,6 +200,7 @@ export function Landing() {
     initial === "signup" || initial === "signin" ? initial : null,
   );
   const [ways, setWays] = useState<AuthSettings | null>(null);
+  const opening = useOpening();
   useEffect(() => {
     authSettings().then(setWays);
     if (initial) history.replaceState(null, "", window.location.pathname);
@@ -205,11 +239,11 @@ export function Landing() {
 
         <section className="lp-features" aria-label="Features">
           {FEATURES.map((f) => (
-            <article key={f.title} className="lp-feature">
+            <Feature key={f.title} opening={opening}>
               {f.demo}
               <h2 className="lp-title">{f.title}</h2>
               <p className="lp-text">{f.text}</p>
-            </article>
+            </Feature>
           ))}
         </section>
 

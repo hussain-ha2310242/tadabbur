@@ -1389,59 +1389,23 @@ body {
   stroke: color-mix(in srgb, var(--fg) 16%, transparent);
   stroke-width: 1;
 }
-/* each ring breathes in and out of view, and turns about the sphere's centre */
+/* The spheres and the dust stand still. They used to turn, breathe and drift
+   without end, and every frame made the browser redraw the whole page behind
+   the sheet: a laptop's fan and heat for decoration. Drawn once, they cost
+   nothing. Each ring keeps its own strength and angle, so the pair still looks
+   hand-placed. */
 .desk-breathe {
-  animation: desk-breathe ease-in-out infinite;
+  opacity: var(--ring-o, 0.6);
 }
 .desk-spin {
   transform-box: view-box;
   transform-origin: 50% 50%;
-  animation: desk-turn linear infinite;
+  transform: rotate(var(--ring-a, 0deg));
 }
-@keyframes desk-breathe {
-  0%,
-  100% {
-    opacity: 0.35;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-@keyframes desk-turn {
-  to {
-    transform: rotate(360deg);
-  }
-}
-/* ink dust: fades in, drifts a little down and across, and fades out */
+/* ink dust: still specks in the margins */
 .desk-dust circle {
   fill: var(--fg);
-  opacity: var(--o);
-  filter: blur(0.4px);
-  animation: desk-settle linear infinite;
-}
-@keyframes desk-settle {
-  0% {
-    transform: translate(0, 0);
-    opacity: 0;
-  }
-  15%,
-  85% {
-    opacity: var(--o);
-  }
-  100% {
-    transform: translate(var(--dx), var(--dy));
-    opacity: 0;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .desk-breathe,
-  .desk-spin,
-  .desk-dust circle {
-    animation: none;
-  }
-  .desk-breathe {
-    opacity: 0.7;
-  }
+  opacity: calc(var(--o) * 0.8);
 }
 
 /* the top row: the name between two kashida strokes, each ending in a nuqta */
@@ -1502,22 +1466,10 @@ body {
   filter: url(#deckle);
   overflow: visible;
 }
+/* the aged edges hold still: a fade under the torn-edge filter redrew the
+   whole sheet, and its grain, sixty times a second */
 .paper-age {
-  animation: paper-breathe 9s ease-in-out infinite;
-}
-@keyframes paper-breathe {
-  0%,
-  100% {
-    opacity: 0.7;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .paper-age {
-    animation: none;
-  }
+  opacity: 0.85;
 }
 
 /* ---- you: the name and streak on the home line, and the profile page ---- */
@@ -3309,6 +3261,11 @@ h2.note-title::before {
 }
 .lp-cell.lit {
   animation: lp-fill 4.2s ease infinite;
+}
+/* a resting demo: the streak cells stay filled, nothing moves */
+.lp-rest .lp-cell.lit {
+  animation: none;
+  background: var(--st-2);
 }
 @keyframes lp-fill {
   0%,

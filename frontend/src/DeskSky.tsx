@@ -1,13 +1,14 @@
 import { CSSProperties, useEffect, useMemo, useState } from "react";
 
-// The desk's living layer, behind the sheet. Two armillary spheres sit on the
-// screen edges, each ring turning and breathing in and out of view at its own
-// pace. Ink dust settles slowly through the margins. Decoration only: no text.
+// The desk behind the sheet: two armillary spheres on the screen edges and ink
+// dust in the margins. They are drawn once and stand still: when they turned,
+// breathed and drifted, the browser redrew the page every frame and the laptop
+// ran hot. Decoration only: no text.
 const FRAC = [0.28, 0.38, 0.5, 0.62]; // ring radius, as a share of the window height
 const TILT = [1, 0.42, 1, 0.3]; // 1 = a flat ring; smaller = a ring seen at an angle
 const TICKS = [72, 48, 72, 36];
-const SPIN = [150, -210, 290, -380]; // seconds per turn; negative turns backwards
-const BREATHE = [24, 31, 19, 27]; // seconds per in-and-out breath, per ring
+const ANGLE = [-18, 24, 9, -31]; // each ring's tilt in degrees; the right sphere mirrors it
+const STRENGTH = [0.5, 0.8, 0.62, 0.42]; // each ring's ink, so the rings are not all alike
 const SHEET_MAX = 1152; // the sheet's max width (max-w-6xl): the margin is what is left either side
 
 function tickPath(rad: number, ry: number, n: number, unit: number): string {
@@ -38,27 +39,17 @@ function Sphere({ side, height }: { side: "left" | "right"; height: number }) {
   const R = height * FRAC[FRAC.length - 1];
   const edge: CSSProperties = side === "left" ? { left: -R } : { right: -R };
   const style: CSSProperties = { ...edge, top: height / 2 - R, width: R * 2, height: R * 2 };
-  // the right sphere turns and breathes out of step with the left, so the pair is not copied
+  // the right sphere mirrors the left's angles and swaps its strengths, so the pair is not copied
   const flip = side === "right";
 
   return (
     <svg className="desk-sky" aria-hidden="true" style={style} viewBox={`${-R} ${-R} ${R * 2} ${R * 2}`}>
       {rings.map((r, i) => {
-        const backwards = (SPIN[i] < 0) !== flip;
-        const phase = BREATHE[i] * (0.37 * (i + 1) + (flip ? 0.5 : 0));
+        const angle = flip ? -ANGLE[i] : ANGLE[i];
+        const strength = STRENGTH[(i + (flip ? 2 : 0)) % STRENGTH.length];
         return (
-          <g
-            key={i}
-            className="desk-breathe"
-            style={{ animationDuration: `${BREATHE[i]}s`, animationDelay: `${-phase}s` }}
-          >
-            <g
-              className="desk-spin"
-              style={{
-                animationDuration: `${Math.abs(SPIN[i])}s`,
-                animationDirection: backwards ? "reverse" : "normal",
-              }}
-            >
+          <g key={i} className="desk-breathe" style={{ "--ring-o": strength } as CSSProperties}>
+            <g className="desk-spin" style={{ "--ring-a": `${angle}deg` } as CSSProperties}>
               <ellipse cx={0} cy={0} rx={r.rx} ry={r.ry} />
               <path d={r.d} />
             </g>
@@ -69,7 +60,7 @@ function Sphere({ side, height }: { side: "left" | "right"; height: number }) {
   );
 }
 
-type Speck = { x: number; y: number; r: number; o: number; dx: number; dy: number; dur: number; delay: number };
+type Speck = { x: number; y: number; r: number; o: number };
 
 // a small seeded random, so the specks land in the same places on every load
 function rng(seed: number) {
@@ -90,17 +81,7 @@ function specksFor(w: number, h: number): Speck[] {
   for (let side = 0; side < 2; side++) {
     for (let i = 0; i < count; i++) {
       const x = side === 0 ? rand() * margin : w - margin + rand() * margin;
-      const dur = 30 + rand() * 40;
-      out.push({
-        x,
-        y: rand() * h,
-        r: 0.6 + rand() * 1.3,
-        o: 0.3 + rand() * 0.4,
-        dx: (rand() - 0.5) * 28,
-        dy: 60 + rand() * 140,
-        dur,
-        delay: -rand() * dur,
-      });
+      out.push({ x, y: rand() * h, r: 0.6 + rand() * 1.3, o: 0.3 + rand() * 0.4 });
     }
   }
   return out;
@@ -116,15 +97,7 @@ function Dust({ width, height }: { width: number; height: number }) {
           cx={s.x}
           cy={s.y}
           r={s.r}
-          style={
-            {
-              "--o": s.o,
-              "--dx": `${s.dx}px`,
-              "--dy": `${s.dy}px`,
-              animationDuration: `${s.dur}s`,
-              animationDelay: `${s.delay}s`,
-            } as CSSProperties
-          }
+          style={{ "--o": s.o } as CSSProperties}
         />
       ))}
     </svg>
