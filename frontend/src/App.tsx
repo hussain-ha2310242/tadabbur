@@ -7,6 +7,7 @@ import { ProfileChip, ProfilePage } from "./views/Profile";
 import { applyCardStyle, applyTextScale, applyTheme } from "./theme";
 import { DeskSky } from "./DeskSky";
 import { PaperDefs, PaperSheet } from "./Paper";
+import { ClaudeHandoff } from "./Handoff";
 
 type View = "library" | "review" | "profile" | "words";
 
@@ -93,6 +94,7 @@ export default function App() {
         </div>
 
       </main>
+      <ClaudeHandoff />
     </>
   );
 }

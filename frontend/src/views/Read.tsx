@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { HomeStats } from "./Profile";
 import { CorkBoard } from "./Board";
@@ -12,6 +12,8 @@ import { SpeakButton, speak } from "../Speak";
 import { nextStars, Stars } from "../Stars";
 import { applyTextScale } from "../theme";
 import { usePhone } from "../usePhone";
+import { copyToClaude } from "../Handoff";
+import { getWordInfo, hasMeaning } from "../wordInfo";
 import { createPortal } from "react-dom";
 
 type Cursor = { si: number; ti: number };
@@ -108,15 +110,6 @@ export default function Library({
     setError(null);
   }
 
-  async function copyText(t: string): Promise<boolean> {
-    try {
-      await navigator.clipboard.writeText(t);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   // save now: the app's own calls do the extraction and glosses
   // (copy prompt saves nothing until Claude's reply is pasted: saveNote with a reply)
   async function saveNote(glosses: "fanar" | "none", raw?: string) {
@@ -165,10 +158,10 @@ export default function Library({
     setBusy(true);
     setError(null);
     try {
-      const { prompt } = await api.previewPrompt(titleText, bodyText);
-      setPromptText(prompt);
-      setCopied(await copyText(prompt));
-      window.open("https://claude.ai/new", "_blank", "noopener");
+      let built = "";
+      const copied = await copyToClaude(async () => (built = (await api.previewPrompt(titleText, bodyText)).prompt));
+      setPromptText(built);
+      setCopied(copied !== null);
       setMode("paste");
     } catch (e) {
       setError(String(e));
@@ -321,11 +314,11 @@ export default function Library({
               <>
                 <p className="hand mt-4 text-sm" style={{ color: "var(--muted)" }}>
                   {copied
-                    ? "prompt copied. paste it into the new window, then paste Claude's JSON reply below."
+                    ? "prompt copied. paste it into Claude, then paste Claude's JSON reply below."
                     : "couldn't copy the prompt automatically."}{" "}
                   {!copied && (
                     <button
-                      onClick={async () => setCopied(await copyText(promptText))}
+                      onClick={async () => setCopied((await copyToClaude(async () => promptText, { open: false })) !== null)}
                       className={linkCls(false)}
                     >
                       copy again
@@ -793,7 +786,10 @@ function ReadingView({
     meaningfulIdx.includes(sIdx) ? sIdx : meaningfulIdx.find((i) => i > sIdx) ?? meaningfulIdx[meaningfulIdx.length - 1] ?? 0;
   const [arScale, setArScale] = useState(1);
   const SCALES = [0.85, 1, 1.2, 1.4];
-  const [hover, setHover] = useState<{ token: Token; si: number; ti: number; rect: DOMRect } | null>(null);
+  // the word under the pointer lives outside this view's state: moving across
+  // words then redraws only the small card, not every word of the text
+  const hoverStore = useMemo(() => makeHoverStore(), []);
+  const setHover = hoverStore.set;
   // a phone: the reading on top, and what you press in a dock at the bottom of the screen
   const phone = usePhone();
   const dockRef = useRef<HTMLDivElement>(null);
@@ -1250,14 +1246,12 @@ function ReadingView({
           {
             label: "Copy prompt for Claude",
             onClick: async () => {
+              setShowStudy(true);
               try {
-                const { prompt } = await api.getPrompt(text.id);
-                await navigator.clipboard.writeText(prompt);
-                flash("prompt copied - paste it into Claude, then paste the reply here");
+                await copyToClaude(async () => (await api.getPrompt(text.id)).prompt);
               } catch (e) {
                 setError(String(e));
               }
-              setShowStudy(true);
             },
           },
           {
@@ -1608,14 +1602,11 @@ function ReadingView({
         </div>
       </div>
 
-      {hover && (
-        <HoverCard
-          token={hover.token}
-          translation={hover.si >= 0 ? text.analysis?.sentences?.[String(hover.si)] : undefined}
-          notes={notes.filter((n) => covers(n, { si: hover.si, ti: hover.ti }))}
-          rect={hover.rect}
-        />
-      )}
+      <HoverLayer
+        store={hoverStore}
+        sentences={text.analysis?.sentences}
+        notes={notes}
+      />
 
       <audio ref={audioRef} hidden />
     </div>
@@ -1801,7 +1792,7 @@ function NoteItem({
       )}
       <textarea
         value={comment}
-        rows={comment ? 2 : 1}
+        rows={Math.min(4, Math.max(1, Math.ceil(comment.length / 34)))}
         dir="auto"
         placeholder="add a note…"
         onChange={(e) => setComment(e.target.value)}
@@ -1896,20 +1887,41 @@ function WordPanel({
   const loadDetails = useCallback(async () => {
     setLoadingInfo(true);
     try {
-      setInfo(
-        await api.enrich({
-          lemma_key: token.lemma_key,
-          lemma: token.lemma,
-          pos: token.pos,
-          root: token.root,
-        }),
-      );
+      setInfo(await getWordInfo({ lemma_key: token.lemma_key, lemma: token.lemma, pos: token.pos, root: token.root }));
     } catch {
       /* surfaced via missing info */
     } finally {
       setLoadingInfo(false);
     }
   }, [token]);
+
+  // a word saved without a meaning: look it up at once (the same details the
+  // "i" shows), show it, and keep it in your wallet once the word is there
+  const missing = !hasMeaning(token.gloss);
+  const [found, setFound] = useState<string | null>(null);
+  const [finding, setFinding] = useState(false);
+  useEffect(() => {
+    if (!missing) return;
+    let live = true;
+    setFinding(true);
+    getWordInfo({ lemma_key: token.lemma_key, lemma: token.lemma, pos: token.pos, root: token.root })
+      .then((i) => {
+        if (!live) return;
+        setInfo(i);
+        setFound((i.meaning ?? "").trim() || null);
+      })
+      .catch(() => {})
+      .finally(() => live && setFinding(false));
+    return () => {
+      live = false;
+    };
+  }, [missing, token.lemma_key, token.lemma, token.pos, token.root]);
+  useEffect(() => {
+    if (missing && found && status) {
+      api.setMissingMeaning(token.lemma_key, found, token.root ? null : info?.root ?? null).catch(() => {});
+    }
+  }, [missing, found, status, token.lemma_key, token.root, info?.root]);
+  const meaningText = missing ? found ?? (finding ? "finding the meaning…" : "-") : cleanGloss(token.gloss);
 
   // the keyboard 'd' opens details once for this word
   useEffect(() => {
@@ -2118,7 +2130,7 @@ function WordPanel({
         <div className="wpp-top">
           <SpeakButton text={token.diac || token.word} onError={onError} />
           <span className="ar wp-word">{token.diac}</span>
-          {editing ? glossInput : <span className="hand wpp-gloss">{cleanGloss(token.gloss)}</span>}
+          {editing ? glossInput : <span className={`hand wpp-gloss ${missing && !found ? "dim" : ""}`}>{meaningText}</span>}
           <Stars value={importance} onChange={onImportance} />
           {infoBtn}
         </div>
@@ -2158,7 +2170,7 @@ function WordPanel({
           glossInput
         ) : (
           <>
-            <span className="hand wp-gloss">{cleanGloss(token.gloss)}</span>
+            <span className={`hand wp-gloss ${missing && !found ? "dim" : ""}`}>{meaningText}</span>
             {pencil}
           </>
         )}
@@ -2253,9 +2265,7 @@ function StudyPanel({
   async function copyPrompt() {
     setErr(null);
     try {
-      const { prompt } = await api.getPrompt(text.id);
-      await navigator.clipboard.writeText(prompt);
-      flash("prompt copied - paste it into Claude");
+      await copyToClaude(async () => (await api.getPrompt(text.id)).prompt);
     } catch (e) {
       setErr(String(e));
     }
@@ -2308,7 +2318,7 @@ function StudyPanel({
           className="rounded-sm border px-3 py-1"
           style={{ borderColor: "var(--gold)", color: "var(--gold)" }}
         >
-          Copy prompt
+          Copy prompt for Claude
         </button>
         {a && (
           <button onClick={clear} style={{ color: "var(--muted)" }}>
@@ -2343,6 +2353,48 @@ function StudyPanel({
         )}
       </div>
     </div>
+  );
+}
+
+type Hover = { token: Token; si: number; ti: number; rect: DOMRect } | null;
+
+/** The word under the pointer, kept apart from the reading view's state. */
+function makeHoverStore() {
+  let value: Hover = null;
+  const subs = new Set<() => void>();
+  return {
+    get: () => value,
+    set: (v: Hover) => {
+      if (v === value) return;
+      value = v;
+      subs.forEach((f) => f());
+    },
+    subscribe: (f: () => void) => {
+      subs.add(f);
+      return () => subs.delete(f);
+    },
+  };
+}
+
+/** The hover card, redrawn on its own as the pointer moves. */
+function HoverLayer({
+  store,
+  sentences,
+  notes,
+}: {
+  store: ReturnType<typeof makeHoverStore>;
+  sentences?: Record<string, string>;
+  notes: Annotation[];
+}) {
+  const hover = useSyncExternalStore(store.subscribe, store.get);
+  if (!hover) return null;
+  return (
+    <HoverCard
+      token={hover.token}
+      translation={hover.si >= 0 ? sentences?.[String(hover.si)] : undefined}
+      notes={notes.filter((n) => covers(n, { si: hover.si, ti: hover.ti }))}
+      rect={hover.rect}
+    />
   );
 }
 

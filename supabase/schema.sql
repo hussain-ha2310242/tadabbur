@@ -114,6 +114,10 @@ create table public.activity (
   reviews integer not null default 0,
   marks integer not null default 0,
   texts integer not null default 0,
+  new_words integer not null default 0, -- words and phrases you started learning
+  cleared boolean not null default false, -- nothing was left to review (as last seen)
+  goal_new smallint, -- the daily goal in force that day; null before goals existed
+  goal_reviews smallint,
   primary key (user_id, day)
 );
 
@@ -205,27 +209,48 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
 
--- one study event today, in the user's own time zone
+-- one study event today, in the user's own time zone. Kinds: reviews, marks,
+-- texts, new_words (words and phrases you started learning), cleared and
+-- uncleared (whether anything is left to review: the app records the state it
+-- last saw, so the day ends with the latest), goal (the goal changed: only
+-- re-stamps today)
 create or replace function public.log_activity(kind text, n int default 1)
 returns void language plpgsql security invoker set search_path = '' as $$
 declare
   uid uuid := auth.uid();
   d date;
+  gn smallint;
+  gr smallint;
+  -- only the app's own goal signals stamp a day with the goal; other events
+  -- leave the stamp as it is (so an older app never stamps a day it cannot meet)
+  stamp boolean := kind in ('new_words', 'cleared', 'uncleared', 'goal');
 begin
   if uid is null or n <= 0 then return; end if;
-  if kind not in ('reviews', 'marks', 'texts') then
+  if kind not in ('reviews', 'marks', 'texts', 'new_words', 'cleared', 'uncleared', 'goal') then
     raise exception 'unknown activity kind: %', kind;
   end if;
   d := (now() at time zone coalesce((select p.timezone from public.profiles p where p.id = uid), 'Asia/Qatar'))::date;
-  insert into public.activity (user_id, day, reviews, marks, texts)
+  gn := coalesce((select least(greatest(s.value::int, 1), 500) from public.settings s
+                   where s.user_id = uid and s.key = 'goal_new' and s.value ~ '^[0-9]{1,4}$'), 5);
+  gr := coalesce((select least(greatest(s.value::int, 1), 500) from public.settings s
+                   where s.user_id = uid and s.key = 'goal_reviews' and s.value ~ '^[0-9]{1,4}$'), 10);
+  insert into public.activity (user_id, day, reviews, marks, texts, new_words, cleared, goal_new, goal_reviews)
   values (uid, d,
           case when kind = 'reviews' then n else 0 end,
           case when kind = 'marks' then n else 0 end,
-          case when kind = 'texts' then n else 0 end)
+          case when kind = 'texts' then n else 0 end,
+          case when kind = 'new_words' then n else 0 end,
+          kind = 'cleared',
+          case when stamp then gn end,
+          case when stamp then gr end)
   on conflict (user_id, day) do update set
     reviews = public.activity.reviews + excluded.reviews,
     marks = public.activity.marks + excluded.marks,
-    texts = public.activity.texts + excluded.texts;
+    texts = public.activity.texts + excluded.texts,
+    new_words = public.activity.new_words + excluded.new_words,
+    cleared = case kind when 'cleared' then true when 'uncleared' then false else public.activity.cleared end,
+    goal_new = coalesce(excluded.goal_new, public.activity.goal_new),
+    goal_reviews = coalesce(excluded.goal_reviews, public.activity.goal_reviews);
 end $$;
 
 -- the home page: every note with its progress, tags and whether it has study data

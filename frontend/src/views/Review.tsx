@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, shared, type Answer, type DueWord, type TagWithCount, type TextSummary } from "../api";
+import { api, shared, type Answer, type DueWord, type TagWithCount, type TextSummary, type WordInfo } from "../api";
 import { cleanGloss } from "../gloss";
 import { Icon } from "../icons";
 import { SpeakButton, speak } from "../Speak";
 import { nextStars, Stars } from "../Stars";
 import { usePhone } from "../usePhone";
+import { getWordInfo, hasMeaning } from "../wordInfo";
 import { createPortal } from "react-dom";
 
 /** Anki's answers, in order, with their keys. */
@@ -21,8 +22,100 @@ const KEYS: [string, string][] = [
   ["1 2 3 4", "again, hard, good, easy"],
   ["i", "importance * ** ***"],
   ["h", "hear the word"],
+  ["d", "more about it (after the answer)"],
   ["?", "show or hide these keys"],
 ];
+
+const POS: Record<string, string> = {
+  noun: "noun", verb: "verb", adj: "adjective", adjective: "adjective", adv: "adverb", prep: "preposition",
+  conj: "conjunction", pron: "pronoun", part: "particle", det: "determiner", abbrev: "abbreviation",
+  noun_prop: "name", pron_dem: "demonstrative", verb_pseudo: "verb",
+};
+
+/** More about the card, behind its "i": for a word, its type, similar words,
+ *  forms and an example (fetched once); for a phrase or note, the whole
+ *  sentence it sits in and the article it came from. */
+function CardInfo({ card }: { card: DueWord }) {
+  const isNote = card.kind === "note";
+  const [info, setInfo] = useState<WordInfo | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(!isNote);
+  useEffect(() => {
+    if (isNote) return;
+    let live = true;
+    getWordInfo({ lemma_key: card.lemma_key, lemma: card.display, pos: card.pos, root: card.root })
+      .then((i) => live && setInfo(i))
+      .catch((e) => live && setErr(String(e instanceof Error ? e.message : e)))
+      .finally(() => live && setLoading(false));
+    return () => {
+      live = false;
+    };
+  }, [card.lemma_key, card.display, card.pos, card.root, isNote]);
+
+  if (isNote) {
+    const sentence = [card.before, card.display, card.after].filter(Boolean).join(" ");
+    return (
+      <div className="review-info">
+        {!sentence && <p className="review-info-dim">nothing more for this one</p>}
+        {sentence && (
+          <div>
+            <div className="lbl">in its sentence</div>
+            <p className="ar review-info-ar" dir="rtl">
+              {card.before} <mark>{card.display}</mark> {card.after}
+            </p>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const pos = card.pos ? POS[card.pos] ?? card.pos : null;
+  return (
+    <div className="review-info">
+      {pos && (
+        <div className="review-info-row">
+          <span className="lbl">type</span>
+          <span>{pos}</span>
+        </div>
+      )}
+      {loading && <p className="review-info-dim">loading more…</p>}
+      {err && <p className="review-info-dim">{err}</p>}
+      {info?.similar && info.similar.length > 0 && (
+        <div>
+          <div className="lbl">similar</div>
+          <ul className="review-info-list">
+            {info.similar.map((x, i) => (
+              <li key={i}>
+                <span className="ar">{x.word}</span>
+                <span className="hand">{x.meaning}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {info?.conjugation && Object.keys(info.conjugation).length > 0 && (
+        <div>
+          <div className="lbl">forms</div>
+          <ul className="review-info-list">
+            {Object.entries(info.conjugation).map(([k, v]) => (
+              <li key={k}>
+                <span className="ar review-info-gold">{v}</span>
+                <span>{k}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {info?.example?.ar && (
+        <div>
+          <div className="lbl">example</div>
+          <p className="ar review-info-ar" dir="rtl">{info.example.ar}</p>
+          <p className="hand review-info-en">{info.example.en}</p>
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** A card answered with a step shorter than this comes back in the same
  *  session, as in Anki (its "learn ahead" limit). */
@@ -91,6 +184,7 @@ export default function Review({ textId }: { textId?: number } = {}) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [seed, setSeed] = useState(0); // bumps per card: flips direction and replays the entrance
+  const [infoOpen, setInfoOpen] = useState(false); // the card's "i": more about it, after the answer
   const [stamp, setStamp] = useState<{ a: Answer; label: string; k: number } | null>(null);
   const [applied, setApplied] = useState<Filters>(start); // what the queue is showing
   const [draft, setDraft] = useState<Filters>(start); // what the panel is set to
@@ -128,6 +222,7 @@ export default function Review({ textId }: { textId?: number } = {}) {
     setLoading(true);
     setError(null);
     setRevealed(false);
+    setInfoOpen(false);
     const tagIds = f.scopes.filter((k) => k.startsWith("tag:")).map((k) => Number(k.slice(4)));
     const textIds = f.scopes.filter((k) => k.startsWith("text:")).map((k) => Number(k.slice(5)));
     try {
@@ -152,10 +247,64 @@ export default function Review({ textId }: { textId?: number } = {}) {
   }
 
   // English to Arabic and Arabic to English take turns, so both get tested.
-  // The English front needs a gloss to show.
+  // The English front needs a gloss to show; it is chosen once per card, so a
+  // meaning that arrives while the card is up does not turn it round.
   // A note's card always shows the selection first and your comment behind it.
   const isNote = current?.kind === "note";
-  const enFront = !isNote && !!current?.gloss && seed % 2 === 0;
+  const sideRef = useRef<{ k: string; en: boolean } | null>(null);
+  const cardKey = current ? `${current.lemma_key}-${seed}` : "";
+  if (current && sideRef.current?.k !== cardKey) {
+    sideRef.current = { k: cardKey, en: !isNote && hasMeaning(current.gloss) && seed % 2 === 0 };
+  }
+  const enFront = !!current && !!sideRef.current?.en;
+
+  // ---- meanings for cards saved without one: looked up and kept ----
+  const [finding, setFinding] = useState<Record<string, "busy" | "none">>({});
+  const tried = useRef(new Set<string>());
+  const patchCard = (key: string, gloss: string, root: string | null) => {
+    const fix = (c: DueWord) => (c.lemma_key === key ? { ...c, gloss, root: c.root || root } : c);
+    setCurrent((c) => (c ? fix(c) : c));
+    setQueue((q) => q.map(fix));
+    setLearning((l) => l.map(fix));
+  };
+  function findMeaning(card: DueWord) {
+    const key = card.lemma_key;
+    if (hasMeaning(card.gloss) || tried.current.has(key)) return;
+    tried.current.add(key);
+    setFinding((f) => ({ ...f, [key]: "busy" }));
+    const isNoteCard = card.kind === "note";
+    const found: Promise<{ gloss: string | null; root: string | null }> = isNoteCard
+      ? api
+          .noteMeaning(
+            Number(key.slice(shared.NOTE_PREFIX.length)),
+            card.display,
+            [card.before, card.display, card.after].filter(Boolean).join(" "),
+          )
+          .then((g) => ({ gloss: g, root: null }))
+      : getWordInfo({ lemma_key: key, lemma: card.display, pos: card.pos, root: card.root }).then(async (i) => {
+          const gloss = (i.meaning ?? "").trim() || null;
+          const root = card.root || i.root || null;
+          if (gloss || root) await api.setMissingMeaning(key, gloss, card.root ? null : root).catch(() => {});
+          return { gloss, root };
+        });
+    found
+      .then(({ gloss, root }) => {
+        if (gloss) patchCard(key, gloss, root);
+        setFinding((f) => {
+          const next = { ...f };
+          if (gloss) delete next[key];
+          else next[key] = "none";
+          return next;
+        });
+      })
+      .catch(() => setFinding((f) => ({ ...f, [key]: "none" })));
+  }
+  // the card on show, and the next few in line, quietly
+  useEffect(() => {
+    if (current) findMeaning(current);
+    for (const c of queue.slice(0, 3)) findMeaning(c);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [current?.lemma_key, queue]);
 
   // what each answer would do, worked out when the answer is shown
   const outcomes = useMemo(
@@ -180,6 +329,7 @@ export default function Review({ textId }: { textId?: number } = {}) {
     setQueue(q);
     setLearning(l);
     setRevealed(false);
+    setInfoOpen(false);
     setSeed((s) => s + 1);
     setStamp({ a, label: out.label, k: (stamp?.k ?? 0) + 1 });
     api.grade(current.lemma_key, a, out).catch((e) => setError(`not saved: ${String(e)}`));
@@ -212,6 +362,7 @@ export default function Review({ textId }: { textId?: number } = {}) {
         else reveal();
       } else if (e.key === "i") setImportance(nextStars(current?.importance ?? 0));
       else if (e.key === "h") sayIt();
+      else if (e.key === "d" && revealed) setInfoOpen((v) => !v);
       else if (e.key === "?") setShowKeys((v) => !v);
       else if (e.key === "Escape") setShowKeys(false);
       else if (revealed && ["1", "2", "3", "4"].includes(e.key)) answer(ANSWERS[Number(e.key) - 1].a);
@@ -496,6 +647,17 @@ export default function Review({ textId }: { textId?: number } = {}) {
             <span className="review-tools">
               {canHear && <SpeakButton text={current.display} onError={setError} />}
               <Stars value={current.importance ?? 0} onChange={setImportance} />
+              {revealed && (
+                <button
+                  onClick={() => setInfoOpen((v) => !v)}
+                  title="More about it (d)"
+                  aria-label="More about it"
+                  aria-expanded={infoOpen}
+                  className={`info-i review-i ${infoOpen ? "on" : ""}`}
+                >
+                  i
+                </button>
+              )}
             </span>
           </div>
 
@@ -520,13 +682,25 @@ export default function Review({ textId }: { textId?: number } = {}) {
               {isNote ? (
                 <>
                   {back && <div className="hand review-note-back" dir="auto">{back}</div>}
+                  {!back && finding[current.lemma_key] === "busy" && (
+                    <div className="hand review-finding">finding the meaning…</div>
+                  )}
                   {current.comment && <p className="hand review-note-comment" dir="auto">{current.comment}</p>}
-                  {!back && !current.comment && <div className="hand review-note-back">-</div>}
+                  {!back && !current.comment && finding[current.lemma_key] !== "busy" && (
+                    <div className="hand review-note-back">-</div>
+                  )}
                 </>
               ) : enFront ? (
                 <div className="ar text-3xl leading-relaxed">{back ?? "-"}</div>
+              ) : back === "-" && finding[current.lemma_key] === "busy" ? (
+                <div className="hand review-finding">finding the meaning…</div>
               ) : (
-                <div className="hand text-3xl leading-tight">{back ?? "-"}</div>
+                <div
+                  className="hand text-3xl leading-tight"
+                  title={back === "-" ? "No meaning could be found for this word. Edit it in the reader." : undefined}
+                >
+                  {back ?? "-"}
+                </div>
               )}
               {roots.length > 0 && (
                 <div className="flex gap-1" dir="rtl">
@@ -540,6 +714,7 @@ export default function Review({ textId }: { textId?: number } = {}) {
                   {current.notes}
                 </p>
               )}
+              {infoOpen && <CardInfo card={current} />}
             </div>
           )}
 

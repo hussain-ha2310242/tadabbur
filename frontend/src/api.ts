@@ -100,10 +100,35 @@ export type WordInfo = {
 
 export type Settings = Record<string, string>;
 
-/** A day counts towards the streak when anything was studied. */
+/** A day counts towards the streak when its daily goal was met (see dayMet). */
 export type Streak = { current: number; longest: number; today: boolean; active_days: number };
 
-export type DayActivity = { day: string; reviews: number; marks: number; texts: number };
+export type DayActivity = {
+  day: string;
+  reviews: number;
+  marks: number;
+  texts: number;
+  new_words?: number; // words and phrases you started learning that day
+  cleared?: boolean; // nothing was left to review (as last seen that day)
+  goal_new?: number | null; // the goal in force that day; none before goals existed
+  goal_reviews?: number | null;
+  met?: boolean; // whether the day counts towards the streak
+};
+
+/** Your daily goal: at least this many new words, and this many reviews. */
+export type Goal = { newWords: number; reviews: number };
+
+/** Today against the goal. Reviews are done once there are enough of them, or
+ *  when nothing is left to review. */
+export type Progress = {
+  goal: Goal;
+  newWords: number;
+  reviews: number;
+  cleared: boolean;
+  newDone: boolean;
+  reviewsDone: boolean;
+  met: boolean;
+};
 
 export type Profile = {
   id: string;
@@ -114,6 +139,7 @@ export type Profile = {
   streak: Streak;
   days: DayActivity[]; // the last 12 weeks, oldest first, one entry per day
   totals: { words: number; known: number; learning: number; texts: number; reviews: number };
+  progress: Progress;
 };
 
 /** The numbers on the home line and in the corner chip. */
@@ -127,6 +153,7 @@ export type Stats = {
   texts: number;
   streak: Streak;
   name: string;
+  progress: Progress;
 };
 
 /** A word in the wallet. */
@@ -139,7 +166,13 @@ const NOTE_PREFIX = "note:"; // how a note's card is keyed in the deck
 const HISTORY_DAYS = 84; // the profile shows 12 weeks
 const DEFAULT_TZ = "Asia/Qatar";
 
+const GOAL_DEFAULT: Goal = { newWords: 5, reviews: 10 };
+const GOAL_MIN = 1;
+const GOAL_MAX = 500;
+
 const SETTINGS_DEFAULTS: Settings = {
+  goal_new: String(GOAL_DEFAULT.newWords),
+  goal_reviews: String(GOAL_DEFAULT.reviews),
   tts_voice: "Noor",
   ar_text_scale: "1",
   theme: "light", // light | dark | system
@@ -207,10 +240,62 @@ async function serverFn(name: string, body: unknown): Promise<Response> {
 
 const serverJson = async <T>(name: string, body: unknown): Promise<T> => (await serverFn(name, body)).json();
 
-const logActivity = (kind: "reviews" | "marks" | "texts") =>
+type ActivityKind = "reviews" | "marks" | "texts" | "new_words" | "cleared" | "uncleared" | "goal";
+
+/** Tell the screens that today's numbers moved (the streak chip and the home line listen). */
+export const ACTIVITY_EVENT = "tadabbur:activity";
+const announce = () => window.dispatchEvent(new Event(ACTIVITY_EVENT));
+
+const logActivity = (kind: ActivityKind) =>
   supabase.rpc("log_activity", { kind }).then(({ error }) => {
     if (error) console.warn("activity not logged:", error.message);
+    else if (kind !== "cleared" && kind !== "uncleared") announce();
   });
+
+// ---- the daily goal ----
+
+const clampGoal = (n: number, fallback: number) =>
+  Number.isFinite(n) && n > 0 ? Math.min(GOAL_MAX, Math.max(GOAL_MIN, Math.round(n))) : fallback;
+
+function goalOf(settings: Settings): Goal {
+  return {
+    newWords: clampGoal(Number(settings.goal_new), GOAL_DEFAULT.newWords),
+    reviews: clampGoal(Number(settings.goal_reviews), GOAL_DEFAULT.reviews),
+  };
+}
+
+/** Whether a day counts towards the streak. A day stamped with a goal counts
+ *  when both parts are met; a day from before goals existed counts when
+ *  anything was studied, as it always did. Today is judged by `goal` (the goal
+ *  as it is now) and `dueNow` (nothing left to review counts as done). */
+function dayMet(d: DayActivity, goal?: Goal, dueNow?: number): boolean {
+  const gn = goal?.newWords ?? d.goal_new;
+  const gr = goal?.reviews ?? d.goal_reviews;
+  if (gn == null || gr == null) return d.reviews + d.marks + d.texts > 0;
+  const cleared = dueNow !== undefined ? dueNow === 0 : !!d.cleared;
+  return (d.new_words ?? 0) >= gn && (d.reviews >= gr || cleared);
+}
+
+function progressOf(row: DayActivity | undefined, goal: Goal, dueNow: number): Progress {
+  const newWords = row?.new_words ?? 0;
+  const reviews = row?.reviews ?? 0;
+  const cleared = dueNow === 0;
+  const newDone = newWords >= goal.newWords;
+  const reviewsDone = reviews >= goal.reviews || cleared;
+  return { goal, newWords, reviews, cleared, newDone, reviewsDone, met: newDone && reviewsDone };
+}
+
+/** The days that count: past days by their own stamp, today by the goal now. */
+function metDays(days: DayActivity[], today: string, goal: Goal, dueNow: number): Set<string> {
+  return new Set(days.filter((d) => (d.day === today ? dayMet(d, goal, dueNow) : dayMet(d))).map((d) => d.day));
+}
+
+/** Record whether anything is left to review, when it changed since last seen
+ *  today, or when today has no goal stamped on it yet (this also stamps it). */
+function noteCleared(row: DayActivity | undefined, dueNow: number) {
+  const cleared = dueNow === 0;
+  if (!row || row.goal_new == null || !!row.cleared !== cleared) void logActivity(cleared ? "cleared" : "uncleared");
+}
 
 // ---- cards: FSRS, the same schedule the old backend used ----
 
@@ -358,7 +443,11 @@ async function profileRow(): Promise<ProfileRow> {
 
 async function activityDays(): Promise<DayActivity[]> {
   return all<DayActivity>((a, b) =>
-    supabase.from("activity").select("day, reviews, marks, texts").order("day").range(a, b),
+    supabase
+      .from("activity")
+      .select("day, reviews, marks, texts, new_words, cleared, goal_new, goal_reviews")
+      .order("day")
+      .range(a, b),
   );
 }
 
@@ -686,6 +775,7 @@ const calls = {
       // already in the wallet: only the level changes
       must(await supabase.from("words").update({ status }).eq("lemma_key", key));
     } else if (error) throw new Error(error.message);
+    else if (status !== "known") void logActivity("new_words"); // a word you start learning
     void logActivity("marks");
     return { lemma_key: key, status, gloss };
   },
@@ -766,6 +856,7 @@ const calls = {
         .select(NOTE_COLS)
         .single(),
     ) as NoteRow;
+    void logActivity("new_words"); // a phrase or note is something new to learn
     void logActivity("marks");
     return noteOf(row);
   },
@@ -804,15 +895,31 @@ const calls = {
   },
 
   getProfile: async (): Promise<Profile> => {
-    const [p, days, counts] = await Promise.all([profileRow(), activityDays(), studyCounts()]);
+    const [p, days, counts, settings] = await Promise.all([
+      profileRow(),
+      activityDays(),
+      studyCounts(),
+      calls.getSettings().catch(() => SETTINGS_DEFAULTS),
+    ]);
     const today = dayIn(p.timezone);
-    const active = new Set(days.filter((d) => d.reviews + d.marks + d.texts > 0).map((d) => d.day));
+    const goal = goalOf(settings);
+    const active = metDays(days, today, goal, counts.due);
     const byDay = new Map(days.map((d) => [d.day, d]));
+    noteCleared(byDay.get(today), counts.due);
     const start = addDays(today, -(HISTORY_DAYS - 1));
     const history: DayActivity[] = Array.from({ length: HISTORY_DAYS }, (_, i) => {
       const day = addDays(start, i);
       const r = byDay.get(day);
-      return { day, reviews: r?.reviews ?? 0, marks: r?.marks ?? 0, texts: r?.texts ?? 0 };
+      return {
+        day,
+        reviews: r?.reviews ?? 0,
+        marks: r?.marks ?? 0,
+        texts: r?.texts ?? 0,
+        new_words: r?.new_words ?? 0,
+        goal_new: day === today ? goal.newWords : r?.goal_new ?? null,
+        goal_reviews: day === today ? goal.reviews : r?.goal_reviews ?? null,
+        met: active.has(day),
+      };
     });
     const s = counts.by_status;
     return {
@@ -830,6 +937,7 @@ const calls = {
         texts: counts.texts,
         reviews: counts.reviews,
       },
+      progress: progressOf(byDay.get(today), goal, counts.due),
     };
   },
 
@@ -851,8 +959,17 @@ const calls = {
   },
 
   stats: async (): Promise<Stats> => {
-    const [p, days, counts] = await Promise.all([profileRow(), activityDays(), studyCounts()]);
-    const active = new Set(days.filter((d) => d.reviews + d.marks + d.texts > 0).map((d) => d.day));
+    const [p, days, counts, settings] = await Promise.all([
+      profileRow(),
+      activityDays(),
+      studyCounts(),
+      calls.getSettings().catch(() => SETTINGS_DEFAULTS),
+    ]);
+    const today = dayIn(p.timezone);
+    const goal = goalOf(settings);
+    const row = days.find((d) => d.day === today);
+    noteCleared(row, counts.due);
+    const active = metDays(days, today, goal, counts.due);
     const s = counts.by_status;
     return {
       known: s.known ?? 0,
@@ -862,9 +979,18 @@ const calls = {
       phrases: counts.phrases,
       due: counts.due,
       texts: counts.texts,
-      streak: streakOf(active, dayIn(p.timezone)),
+      streak: streakOf(active, today),
       name: p.name,
+      progress: progressOf(row, goal, counts.due),
     };
+  },
+
+  /** Change the daily goal (each part 1 to 500). Today is judged by it at once. */
+  setGoal: async (goal: Goal): Promise<Goal> => {
+    const g = { newWords: clampGoal(goal.newWords, GOAL_DEFAULT.newWords), reviews: clampGoal(goal.reviews, GOAL_DEFAULT.reviews) };
+    await calls.saveSettings({ goal_new: String(g.newWords), goal_reviews: String(g.reviews) });
+    await logActivity("goal");
+    return g;
   },
 
   listTags: async (): Promise<TagWithCount[]> => {
@@ -1084,6 +1210,16 @@ const calls = {
   enrich: (entry: { lemma_key: string; lemma: string; pos?: string | null; root?: string | null }) =>
     serverJson<WordInfo>("enrich", entry),
 
+  /** Keep a meaning (and a root) found for a word saved without one. Only
+   *  fills what is missing: a meaning or root already there is never changed. */
+  setMissingMeaning: async (lemmaKey: string, gloss: string | null, root: string | null) => {
+    const g = (gloss ?? "").trim();
+    if (g) must(await supabase.from("words").update({ gloss: g }).eq("lemma_key", lemmaKey).or("gloss.is.null,gloss.eq."));
+    const r = (root ?? "").trim();
+    if (r) must(await supabase.from("words").update({ root: r }).eq("lemma_key", lemmaKey).is("root", null));
+    return { ok: true };
+  },
+
   translate: (text: string, context?: string) =>
     serverJson<{ translation: string }>("translate", { text, context }),
 
@@ -1140,6 +1276,13 @@ export const shared = {
   HISTORY_DAYS,
   SETTINGS_DEFAULTS,
   ANSWERS,
+  GOAL_DEFAULT,
+  goalOf,
+  clampGoal,
+  dayMet,
+  progressOf,
+  metDays,
+  announce,
   newCard,
   nextCard,
   preview,

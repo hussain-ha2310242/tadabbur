@@ -1,7 +1,7 @@
 import type { CSSProperties, ReactNode } from "react";
-import { useEffect, useState } from "react";
-import { api } from "../api";
-import type { DayActivity, Profile, Stats, Streak } from "../api";
+import { useEffect, useRef, useState } from "react";
+import { ACTIVITY_EVENT, api } from "../api";
+import type { DayActivity, Goal, Profile, Progress, Stats, Streak } from "../api";
 import { Account } from "../Auth";
 import { Icon } from "../icons";
 
@@ -21,33 +21,122 @@ export function StreakStar({ lit, size = 13 }: { lit: boolean; size?: number }) 
   );
 }
 
-function streakTitle(s: Streak): string {
+function progressLine(p: Progress): string {
+  const reviews = p.cleared && p.reviews < p.goal.reviews ? "nothing left to review" : `${p.reviews}/${p.goal.reviews} reviews`;
+  return `${p.newWords}/${p.goal.newWords} new words, ${reviews}`;
+}
+
+function streakTitle(s: Streak, p?: Progress): string {
   const days = `${s.current}-day streak`;
-  return s.today ? `${days}, today counted` : `${days}, study today to keep it`;
+  const state = s.today ? "today's goal met" : "meet today's goal to keep it";
+  return p ? `${days}, ${state}. Today: ${progressLine(p)}` : `${days}, ${state}`;
+}
+
+/** Fresh numbers after anything you study: the event fires once the server has
+ *  counted it; a short wait folds a burst of marks into one fetch. */
+function useStats(refresh?: unknown): Stats | null {
+  const [stats, setStats] = useState<Stats | null>(null);
+  useEffect(() => {
+    let live = true;
+    const load = () =>
+      api
+        .stats()
+        .then((d) => live && setStats(d))
+        .catch(() => {});
+    load();
+    let t = 0;
+    const later = () => {
+      window.clearTimeout(t);
+      t = window.setTimeout(load, 700);
+    };
+    window.addEventListener(ACTIVITY_EVENT, later);
+    return () => {
+      live = false;
+      window.clearTimeout(t);
+      window.removeEventListener(ACTIVITY_EVENT, later);
+    };
+  }, [refresh]);
+  return stats;
 }
 
 /** You, in the sheet's top-right corner on every page: the streak star, the
- *  streak and your name. Opens the profile. Refetches when `refresh` changes,
- *  so it is current after a review or a reading session. */
+ *  streak and your name. Opens the profile. The star lights when today's goal
+ *  is met, with a small burst and a word of thanks the moment it happens. */
 export function ProfileChip({ onOpen, refresh }: { onOpen: () => void; refresh?: unknown }) {
-  const [me, setMe] = useState<{ name: string; streak: Streak } | null>(null);
+  const stats = useStats(refresh);
+  const wasMet = useRef<boolean | null>(null);
+  const [cheer, setCheer] = useState<number | null>(null);
 
   useEffect(() => {
-    api
-      .stats()
-      .then((d) => setMe({ name: d.name || "profile", streak: d.streak }))
-      .catch(() => {});
-  }, [refresh]);
+    if (!stats) return;
+    const met = stats.progress.met;
+    if (wasMet.current === false && met) {
+      setCheer(stats.streak.current);
+      const t = window.setTimeout(() => setCheer(null), 3200);
+      wasMet.current = met;
+      return () => window.clearTimeout(t);
+    }
+    wasMet.current = met;
+  }, [stats]);
 
-  if (!me) return null;
+  if (!stats) return null;
   return (
-    <button onClick={onOpen} className="me-link me-corner hand" title={streakTitle(me.streak)}>
-      <span className="me-streak">
-        <StreakStar lit={me.streak.today} />
-        <b>{me.streak.current}</b>
+    <>
+      <button
+        onClick={onOpen}
+        className={`me-link me-corner hand ${cheer !== null ? "cheer" : ""}`}
+        title={streakTitle(stats.streak, stats.progress)}
+      >
+        <span className="me-streak">
+          <StreakStar lit={stats.streak.today} />
+          <b>{stats.streak.current}</b>
+        </span>
+        <span className="me-name">{stats.name || "profile"}</span>
+      </button>
+      {cheer !== null && (
+        <p className="goal-toast hand" role="status">
+          today's goal met · {cheer}-day streak
+        </p>
+      )}
+    </>
+  );
+}
+
+/** Today's goal in one small line: a ring for each part, filled as you go. */
+export function GoalLine({ p, onOpen }: { p: Progress; onOpen?: () => void }) {
+  const ring = (done: number, of: number, ok: boolean, label: string, title: string) => {
+    const k = ok ? 1 : Math.min(1, done / Math.max(1, of));
+    return (
+      <span className={`goal-part ${ok ? "ok" : ""}`} title={title}>
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+          <circle cx="8" cy="8" r="6" className="goal-track" />
+          <circle cx="8" cy="8" r="6" className="goal-fill" style={{ strokeDasharray: `${k * 37.7} 37.7` }} />
+          {ok && <path d="M5.2 8.2l1.9 1.8 3.7-3.9" className="goal-tick" />}
+        </svg>
+        {label}
       </span>
-      <span className="me-name">{me.name}</span>
+    );
+  };
+  // under the goal: so many of so many; once met, just the count
+  const newLabel = p.newDone ? `${p.newWords} new` : `${p.newWords}/${p.goal.newWords} new`;
+  const reviewLabel =
+    p.reviews >= p.goal.reviews
+      ? `${p.reviews} reviews`
+      : p.cleared
+        ? "deck clear"
+        : `${p.reviews}/${p.goal.reviews} reviews`;
+  const content = (
+    <>
+      {ring(p.newWords, p.goal.newWords, p.newDone, newLabel, `New words today: ${p.newWords} of your ${p.goal.newWords} (words and phrases you started learning)`)}
+      {ring(p.reviews, p.goal.reviews, p.reviewsDone, reviewLabel, `Reviews today: ${p.reviews} of your ${p.goal.reviews} (done also when nothing is left to review)`)}
+    </>
+  );
+  return onOpen ? (
+    <button className={`goal-line hand ${p.met ? "met" : ""}`} onClick={onOpen} title="Today's goal: change it on your profile">
+      {content}
     </button>
+  ) : (
+    <span className={`goal-line hand ${p.met ? "met" : ""}`}>{content}</span>
   );
 }
 
@@ -63,14 +152,7 @@ export function HomeStats({
   onWords?: () => void;
   action?: ReactNode;
 }) {
-  const [stats, setStats] = useState<Stats | null>(null);
-
-  useEffect(() => {
-    api
-      .stats()
-      .then(setStats)
-      .catch(() => {});
-  }, []);
+  const stats = useStats();
 
   if (!stats) return null;
 
@@ -94,6 +176,7 @@ export function HomeStats({
           </>
         )}
       </span>
+      <GoalLine p={stats.progress} />
       {action && <span className="ml-auto">{action}</span>}
     </div>
   );
@@ -122,11 +205,112 @@ function plural(n: number, one: string, many = `${one}s`) {
 function dayLabel(d: DayActivity): string {
   const date = parseDay(d.day).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
   const parts = [
+    d.new_words && plural(d.new_words, "new word"),
     d.reviews && plural(d.reviews, "review"),
     d.marks && plural(d.marks, "word marked", "words marked"),
     d.texts && plural(d.texts, "note added", "notes added"),
   ].filter(Boolean);
-  return `${date}: ${parts.length ? parts.join(", ") : "no study"}`;
+  const goal = d.goal_new != null && (d.reviews + d.marks + d.texts > 0) ? (d.met ? " (goal met)" : " (goal not met)") : "";
+  return `${date}: ${parts.length ? parts.join(", ") : "no study"}${goal}`;
+}
+
+/** One part of the goal: its number, with steps down and up, and today's count. */
+function GoalStep({
+  label,
+  value,
+  step,
+  today,
+  done,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  step: number;
+  today: string;
+  done: boolean;
+  onChange: (n: number) => void;
+}) {
+  return (
+    <div className={`goal-row ${done ? "ok" : ""}`}>
+      <span className="goal-row-label">{label}</span>
+      <span className="goal-step">
+        <button onClick={() => onChange(Math.max(1, value - step))} disabled={value <= 1} aria-label={`Fewer ${label}`}>
+          −
+        </button>
+        <input
+          type="number"
+          inputMode="numeric"
+          min={1}
+          max={500}
+          value={value}
+          onChange={(e) => onChange(Number(e.target.value))}
+          aria-label={`${label} a day`}
+        />
+        <button onClick={() => onChange(Math.min(500, value + step))} disabled={value >= 500} aria-label={`More ${label}`}>
+          +
+        </button>
+      </span>
+      <span className="goal-row-today">{today}</span>
+    </div>
+  );
+}
+
+/** The daily goal: at least so many new words and reviews. Changes save on
+ *  their own, a moment after the last press. */
+function GoalCard({ progress, onSaved }: { progress: Progress; onSaved: () => void }) {
+  const [goal, setGoal] = useState<Goal>(progress.goal);
+  const [saved, setSaved] = useState(false);
+  const timer = useRef(0);
+
+  function change(next: Goal) {
+    const clean = {
+      newWords: Number.isFinite(next.newWords) ? Math.min(500, Math.max(1, Math.round(next.newWords) || 1)) : goal.newWords,
+      reviews: Number.isFinite(next.reviews) ? Math.min(500, Math.max(1, Math.round(next.reviews) || 1)) : goal.reviews,
+    };
+    setGoal(clean);
+    setSaved(false);
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(async () => {
+      try {
+        await api.setGoal(clean);
+        setSaved(true);
+        onSaved();
+      } catch {
+        /* the next change tries again */
+      }
+    }, 600);
+  }
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+
+  const reviewsToday = progress.cleared && progress.reviews < goal.reviews ? "deck clear" : `${progress.reviews} today`;
+  return (
+    <section className="goal-card" aria-label="Daily goal">
+      <div className="goal-card-head">
+        <span className="hand">daily goal</span>
+        <span className={`goal-saved ${saved ? "on" : ""}`}>saved</span>
+      </div>
+      <GoalStep
+        label="new words"
+        value={goal.newWords}
+        step={1}
+        today={`${progress.newWords} today`}
+        done={progress.newWords >= goal.newWords}
+        onChange={(n) => change({ ...goal, newWords: n })}
+      />
+      <GoalStep
+        label="reviews"
+        value={goal.reviews}
+        step={5}
+        today={reviewsToday}
+        done={progress.reviews >= goal.reviews || progress.cleared}
+        onChange={(n) => change({ ...goal, reviews: n })}
+      />
+      <p className="goal-note">
+        A day counts for your streak when you meet both. New words are words and phrases you start learning; reviews
+        count as done when nothing is left in the deck.
+      </p>
+    </section>
+  );
 }
 
 const reducedMotion = () => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
@@ -198,7 +382,7 @@ function ActivityGrid({ days, today, lit }: { days: DayActivity[]; today: string
             <span
               key={d.day}
               role="listitem"
-              className={`act-cell l${level(d)}`}
+              className={`act-cell l${level(d)} ${level(d) > 0 && !d.met ? "short" : ""}`}
               style={{ "--i": i } as CSSProperties}
               title={dayLabel(d)}
               aria-label={dayLabel(d)}
@@ -223,11 +407,13 @@ export function ProfilePage() {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
 
-  useEffect(() => {
+  const load = () =>
     api
       .getProfile()
       .then(setP)
       .catch((e) => setError(String(e)));
+  useEffect(() => {
+    load();
   }, []);
 
   // the numbers count up as the grid fills in
@@ -291,7 +477,7 @@ export function ProfilePage() {
 
       <p
         className="pf-streak hand"
-        title={`${streakTitle(streak)}. A day counts when you review a card, set a word's level, or add a note (${p.timezone} time).`}
+        title={`${streakTitle(streak, p.progress)}. Days run on ${p.timezone} time.`}
       >
         <StreakStar lit={streak.today} size={18} />
         <b>{streakN}</b> day streak
@@ -300,6 +486,8 @@ export function ProfilePage() {
         </span>
         best {streak.longest}
       </p>
+
+      <GoalCard progress={p.progress} onSaved={load} />
 
       <ActivityGrid days={p.days} today={p.today} lit={streak.today} />
 

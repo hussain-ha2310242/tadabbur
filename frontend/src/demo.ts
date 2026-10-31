@@ -2,7 +2,7 @@
  *  screens make answered in memory. Nothing reaches Supabase or Fanar, and
  *  nothing is kept after the tab closes. */
 
-import { setBackend, shared, type Annotation, type Calls, type DueWord, type Settings, type TextSummary, type WalletWord } from "./api";
+import { setBackend, shared, type Annotation, type Calls, type DayActivity, type DueWord, type Settings, type TextSummary, type WalletWord } from "./api";
 import { isWord, splitSentences, titleSentence, wordKeys, type Sentence } from "./arabic";
 import { article, BODY, SENTENCES_EN, TITLE } from "./sample";
 import { analysisKey, buildPrompt, parseAnalysis, type ParsedAnalysis } from "./study";
@@ -24,7 +24,7 @@ type State = {
   notes: Note[];
   overrides: Record<string, { gloss: string | null; root: string | null }>;
   settings: Settings;
-  days: Map<string, { reviews: number; marks: number; texts: number }>;
+  days: Map<string, DayActivity>;
   name: string;
   created: string;
 };
@@ -126,11 +126,15 @@ function makeNote(ssi: number, sti: number, esi: number, eti: number, comment: s
   };
 }
 
-function log(kind: "reviews" | "marks" | "texts") {
+function log(kind: "reviews" | "marks" | "texts" | "new_words") {
   const day = shared.dayIn(tz);
-  const d = state.days.get(day) ?? { reviews: 0, marks: 0, texts: 0 };
-  d[kind] += 1;
+  const goal = shared.goalOf(state.settings);
+  const d = state.days.get(day) ?? { day, reviews: 0, marks: 0, texts: 0, new_words: 0 };
+  d[kind] = (d[kind] ?? 0) + 1;
+  d.goal_new = goal.newWords;
+  d.goal_reviews = goal.reviews;
   state.days.set(day, d);
+  shared.announce();
 }
 
 const strip = <T extends { card_json?: unknown }>(x: T) => {
@@ -151,9 +155,27 @@ function counts() {
   return { by, phrases };
 }
 
-function streakNow() {
-  const active = new Set([...state.days].filter(([, d]) => d.reviews + d.marks + d.texts > 0).map(([day]) => day));
-  return shared.streakOf(active, shared.dayIn(tz));
+function dueNow() {
+  const now = Date.now();
+  const due = (x: { status: string; due: string | null }) => x.status !== "known" && (!x.due || Date.parse(x.due) <= now);
+  return [...state.words.values()].filter(due).length + state.notes.filter(due).length;
+}
+
+/** The streak and today's progress, by the same rules as the app. */
+function goalNow() {
+  const today = shared.dayIn(tz);
+  const goal = shared.goalOf(state.settings);
+  const due = dueNow();
+  const days = [...state.days.values()];
+  const active = shared.metDays(days, today, goal, due);
+  return {
+    today,
+    goal,
+    due,
+    active,
+    streak: shared.streakOf(active, today),
+    progress: shared.progressOf(state.days.get(today), goal, due),
+  };
 }
 
 const later = async (): Promise<never> => {
@@ -231,6 +253,7 @@ const demoCalls: Calls = {
     const have = state.words.get(key);
     if (have) have.status = status;
     else {
+      if (status !== "known") log("new_words");
       state.words.set(key, {
         lemma_key: key,
         display: entry.display,
@@ -268,6 +291,7 @@ const demoCalls: Calls = {
     // saved at once without its meaning, like the real app; noteMeaning adds it
     const note = { ...makeNote(a[0], a[1], b[0], b[1], (n.comment ?? "").trim().slice(0, 2000)), meaning: null };
     state.notes.push(note);
+    log("new_words");
     log("marks");
     return noteOut(note);
   },
@@ -296,17 +320,26 @@ const demoCalls: Calls = {
     const today = shared.dayIn(tz);
     const start = shared.addDays(today, -(shared.HISTORY_DAYS - 1));
     const { by } = counts();
+    const g = goalNow();
     return {
       id: "demo",
       name: state.name,
       timezone: tz,
       joined: state.created,
       today,
-      streak: streakNow(),
+      streak: g.streak,
+      progress: g.progress,
       days: Array.from({ length: shared.HISTORY_DAYS }, (_, i) => {
         const day = shared.addDays(start, i);
         const d = state.days.get(day);
-        return { day, reviews: d?.reviews ?? 0, marks: d?.marks ?? 0, texts: d?.texts ?? 0 };
+        return {
+          day,
+          reviews: d?.reviews ?? 0,
+          marks: d?.marks ?? 0,
+          texts: d?.texts ?? 0,
+          new_words: d?.new_words ?? 0,
+          met: g.active.has(day),
+        };
       }),
       totals: {
         words: Object.values(by).reduce((a, b) => a + b, 0),
@@ -323,19 +356,28 @@ const demoCalls: Calls = {
   },
   stats: async () => {
     const { by, phrases } = counts();
-    const now = Date.now();
-    const due = (x: { status: string; due: string | null }) => x.status !== "known" && (!x.due || Date.parse(x.due) <= now);
+    const g = goalNow();
     return {
       known: by.known ?? 0,
       learning: (by.not_known ?? 0) + (by.hard ?? 0) + (by.easy ?? 0),
       hard: by.hard ?? 0,
       easy: by.easy ?? 0,
       phrases,
-      due: [...state.words.values()].filter(due).length + state.notes.filter(due).length,
+      due: g.due,
       texts: 1,
-      streak: streakNow(),
+      streak: g.streak,
       name: state.name,
+      progress: g.progress,
     };
+  },
+  setGoal: async (goal) => {
+    const g = {
+      newWords: shared.clampGoal(goal.newWords, shared.GOAL_DEFAULT.newWords),
+      reviews: shared.clampGoal(goal.reviews, shared.GOAL_DEFAULT.reviews),
+    };
+    state.settings = { ...state.settings, goal_new: String(g.newWords), goal_reviews: String(g.reviews) };
+    shared.announce();
+    return g;
   },
   listTags: async () => state.tags.map((name) => ({ id: TAG_ID, name, notes: 1 })),
   setTextTags: async (_id, names) => {
@@ -423,7 +465,23 @@ const demoCalls: Calls = {
     log("marks");
     return { marked };
   },
-  enrich: later,
+  setMissingMeaning: async (lemmaKey, gloss, root) => {
+    const w = state.words.get(lemmaKey);
+    if (w && !w.gloss?.trim() && gloss?.trim()) w.gloss = gloss.trim();
+    if (w && !w.root && root?.trim()) w.root = root.trim();
+    return { ok: true };
+  },
+  // the demo's details: other words of the sample article from the same root
+  enrich: async (entry) => {
+    const all = state.sentences.flatMap((x) => x.tokens).filter((t) => isWord(t));
+    const self = all.find((t) => t.lemma_key === entry.lemma_key);
+    const root = entry.root ?? self?.root ?? null;
+    const seen = new Set([entry.lemma_key]);
+    const similar = all
+      .filter((t) => root && t.root === root && !seen.has(t.lemma_key) && seen.add(t.lemma_key))
+      .map((t) => ({ word: t.lemma, meaning: t.gloss ?? "" }));
+    return { meaning: self?.gloss ?? "", root, similar };
+  },
   translate: async (text) => {
     const i = state.sentences.findIndex((s) => s.text === text);
     if (i >= 0 && SENTENCES_EN[String(i)]) return { translation: SENTENCES_EN[String(i)] };

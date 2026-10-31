@@ -21,3 +21,14 @@
 2. Press **+**, paste an article (its title on the first line), and save.
 3. Read: tap a word, set its level, drag across words to keep a phrase.
 4. Open the **deck** each day to review.
+
+
+
+
+
+## Future features
+
+1. Youtube video/podcast with transcript as learning source
+2. Sentence making exercises based on existing vocabs
+3. Grammer for reading - i3raab exercises; help people read without too many harakahs
+
