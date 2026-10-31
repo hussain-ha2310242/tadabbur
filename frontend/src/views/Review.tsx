@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, shared, type Answer, type DueWord, type TagWithCount, type TextSummary } from "../api";
 import { cleanGloss } from "../gloss";
+import { Icon } from "../icons";
 import { SpeakButton, speak } from "../Speak";
 import { nextStars, Stars } from "../Stars";
+import { usePhone } from "../usePhone";
+import { createPortal } from "react-dom";
 
 /** Anki's answers, in order, with their keys. */
 const ANSWERS: { a: Answer; label: string; key: string }[] = [
@@ -10,6 +13,15 @@ const ANSWERS: { a: Answer; label: string; key: string }[] = [
   { a: "hard", label: "Hard", key: "2" },
   { a: "good", label: "Good", key: "3" },
   { a: "easy", label: "Easy", key: "4" },
+];
+
+/** The deck's keys, for the shortcuts card. */
+const KEYS: [string, string][] = [
+  ["space", "show the answer, then good"],
+  ["1 2 3 4", "again, hard, good, easy"],
+  ["i", "importance * ** ***"],
+  ["h", "hear the word"],
+  ["?", "show or hide these keys"],
 ];
 
 /** A card answered with a step shorter than this comes back in the same
@@ -83,10 +95,13 @@ export default function Review({ textId }: { textId?: number } = {}) {
   const [applied, setApplied] = useState<Filters>(start); // what the queue is showing
   const [draft, setDraft] = useState<Filters>(start); // what the panel is set to
   const [open, setOpen] = useState(false);
+  const [showKeys, setShowKeys] = useState(false);
   const [tags, setTags] = useState<TagWithCount[]>([]);
   const [notes, setNotes] = useState<TextSummary[]>([]);
   const [showAllSources, setShowAllSources] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
+  // on a phone the answers sit at the bottom of the screen, under the thumb
+  const phone = usePhone();
 
   useEffect(() => {
     api.listTags().then(setTags).catch(() => {});
@@ -95,10 +110,13 @@ export default function Review({ textId }: { textId?: number } = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // close the panel on a click outside it
+  // close the panel and the keys card on a click outside them
   useEffect(() => {
     function onDown(e: MouseEvent) {
-      if (panelRef.current && !panelRef.current.contains(e.target as Node)) setOpen(false);
+      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        setShowKeys(false);
+      }
     }
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
@@ -194,6 +212,8 @@ export default function Review({ textId }: { textId?: number } = {}) {
         else reveal();
       } else if (e.key === "i") setImportance(nextStars(current?.importance ?? 0));
       else if (e.key === "h") sayIt();
+      else if (e.key === "?") setShowKeys((v) => !v);
+      else if (e.key === "Escape") setShowKeys(false);
       else if (revealed && ["1", "2", "3", "4"].includes(e.key)) answer(ANSWERS[Number(e.key) - 1].a);
     }
     window.addEventListener("keydown", onKey);
@@ -244,16 +264,46 @@ export default function Review({ textId }: { textId?: number } = {}) {
     <>
       <div className="relative mb-5 flex items-baseline justify-between gap-4" ref={panelRef}>
         {counts || <p className="hand text-sm" style={{ color: "var(--muted)" }}>{status}</p>}
-        <button
-          onClick={() => {
-            setDraft(applied);
-            setOpen((o) => !o);
-          }}
-          aria-expanded={open}
-          className={link(activeCount > 0)}
-        >
-          filter{activeCount ? ` · ${activeCount}` : ""} {open ? "▴" : "▾"}
-        </button>
+        <span className="deck-head-tools">
+          <button
+            onClick={() => {
+              setShowKeys((v) => !v);
+              setOpen(false);
+            }}
+            aria-expanded={showKeys}
+            aria-label="Keyboard shortcuts"
+            title="Keyboard shortcuts (?)"
+            className={`keys-btn ${showKeys ? "on" : ""}`}
+          >
+            <Icon name="keys" size={17} />
+          </button>
+          <button
+            onClick={() => {
+              setDraft(applied);
+              setOpen((o) => !o);
+              setShowKeys(false);
+            }}
+            aria-expanded={open}
+            className={link(activeCount > 0)}
+          >
+            filter{activeCount ? ` · ${activeCount}` : ""} {open ? "▴" : "▾"}
+          </button>
+        </span>
+
+        {showKeys && (
+          <div className="keys-pop" role="dialog" aria-label="Keyboard shortcuts">
+            {KEYS.map(([k, what]) => (
+              <div key={k} className="keys-row">
+                <span className="keys-k">
+                  {k.split(" ").map((x) => (
+                    <kbd key={x}>{x}</kbd>
+                  ))}
+                </span>
+                <span className="keys-what">{what}</span>
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* floats over the page, so opening it never pushes the card down */}
         {open && (
@@ -396,6 +446,22 @@ export default function Review({ textId }: { textId?: number } = {}) {
   // the Arabic can be heard once it is on show: on the front, or behind an English front
   const canHear = !enFront || revealed;
 
+  const foot =
+    revealed && outcomes ? (
+      <div className="answers" role="group" aria-label="How well did you know it?">
+        {ANSWERS.map(({ a, label, key }) => (
+          <button key={a} onClick={() => answer(a)} className={`ans ans-${a}`} title={`${label} (${key}${a === "good" ? " or space" : ""})`}>
+            <span className="ans-when">{outcomes[a].label}</span>
+            <span className="ans-label">{label}</span>
+          </button>
+        ))}
+      </div>
+    ) : (
+      <button onClick={reveal} className="show-answer">
+        show answer <kbd>space</kbd>
+      </button>
+    );
+
   return (
     <div className="mx-auto max-w-xl">
       {header}
@@ -477,24 +543,10 @@ export default function Review({ textId }: { textId?: number } = {}) {
             </div>
           )}
 
-          <div className="review-foot">
-            {revealed && outcomes ? (
-              <div className="answers" role="group" aria-label="How well did you know it?">
-                {ANSWERS.map(({ a, label, key }) => (
-                  <button key={a} onClick={() => answer(a)} className={`ans ans-${a}`} title={`${label} (${key}${a === "good" ? " or space" : ""})`}>
-                    <span className="ans-when">{outcomes[a].label}</span>
-                    <span className="ans-label">{label}</span>
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <button onClick={reveal} className="show-answer">
-                show answer <kbd>space</kbd>
-              </button>
-            )}
-          </div>
+          {!phone && <div className="review-foot">{foot}</div>}
         </div>
       </div>
+      {phone && createPortal(<div className="phone-dock deck-dock" dir="ltr">{foot}</div>, document.body)}
     </div>
   );
 }

@@ -27,7 +27,8 @@ export type IconName =
   | "close"
   | "cards"
   | "tap"
-  | "speaker";
+  | "speaker"
+  | "keys";
 
 // hand-drawn-feel line icons; each one reads without a label
 const SHAPES: Record<IconName, ReactNode> = {
@@ -141,6 +142,13 @@ const SHAPES: Record<IconName, ReactNode> = {
     <>
       <path d="M9.5 11.5V5.2a1.6 1.6 0 0 1 3.2 0v5.3l4.4.9a2 2 0 0 1 1.6 2.2l-.6 4.4a2.6 2.6 0 0 1-2.6 2.2h-4.3a2.6 2.6 0 0 1-2-1l-3-3.9a1.5 1.5 0 0 1 2.3-1.9Z" />
       <path d="M6.2 4.6 5 3.4M5.6 8H4M15.8 4.6 17 3.4" />
+    </>
+  ),
+  // a keyboard: "the keys"
+  keys: (
+    <>
+      <rect x="3" y="6.5" width="18" height="11" rx="2" />
+      <path d="M7 10h.01M10.3 10h.01M13.7 10h.01M17 10h.01M7 13.6h.01M17 13.6h.01M9.8 13.6h4.4" />
     </>
   ),
   // a speaker with sound coming out: "hear it"

@@ -11,6 +11,8 @@ import { StatusSlider } from "../StatusSlider";
 import { SpeakButton, speak } from "../Speak";
 import { nextStars, Stars } from "../Stars";
 import { applyTextScale } from "../theme";
+import { usePhone } from "../usePhone";
+import { createPortal } from "react-dom";
 
 type Cursor = { si: number; ti: number };
 
@@ -655,11 +657,9 @@ function SourceEditor({
   );
 }
 
-function ActionMenu({
-  items,
-}: {
-  items: { label: string; onClick: () => void; danger?: boolean }[];
-}) {
+type MenuItem = { label: string; onClick: () => void; danger?: boolean; keepOpen?: boolean; disabled?: boolean };
+
+function ActionMenu({ items }: { items: MenuItem[] }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -684,14 +684,15 @@ function ActionMenu({
       </button>
       {open && (
         <div className="frame absolute right-0 top-full z-10 mt-1 min-w-44 rounded-sm py-1">
-          {items.map((it) => (
+          {items.map((it, i) => (
             <button
-              key={it.label}
+              key={i}
+              disabled={it.disabled}
               onClick={() => {
-                setOpen(false);
+                if (!it.keepOpen) setOpen(false);
                 it.onClick();
               }}
-              className="block w-full px-4 py-1.5 text-left text-sm transition-colors hover:bg-[var(--gold-soft)]"
+              className="block w-full px-4 py-1.5 text-left text-sm transition-colors hover:bg-[var(--gold-soft)] disabled:opacity-40"
               style={{ color: it.danger ? "var(--ink-red)" : "var(--fg)" }}
             >
               {it.label}
@@ -793,6 +794,27 @@ function ReadingView({
   const [arScale, setArScale] = useState(1);
   const SCALES = [0.85, 1, 1.2, 1.4];
   const [hover, setHover] = useState<{ token: Token; si: number; ti: number; rect: DOMRect } | null>(null);
+  // a phone: the reading on top, and what you press in a dock at the bottom of the screen
+  const phone = usePhone();
+  const dockRef = useRef<HTMLDivElement>(null);
+  const [dockH, setDockH] = useState(0);
+  useLayoutEffect(() => {
+    const el = dockRef.current;
+    if (!phone || !el) return;
+    const set = () => {
+      const h = Math.ceil(el.getBoundingClientRect().height);
+      setDockH(h);
+      document.documentElement.style.setProperty("--dock-h", `${h}px`);
+    };
+    set();
+    const ro = new ResizeObserver(set);
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      document.documentElement.style.removeProperty("--dock-h");
+    };
+  }, [phone]);
+  const swipe = useRef<{ x: number; y: number } | null>(null);
 
   /** A sentence by index; -1 is the title. */
   const sentenceOf = (si: number): Sentence => (si === -1 ? text.titleSentence : text.sentences[si]);
@@ -1189,29 +1211,7 @@ function ReadingView({
     );
   };
 
-  // the tools live at the top of the side panel, so the title row stays clean
-  const toolsEl = (
-    <div className="rv-tools tile-tools">
-      <button onClick={() => stepScale(-1)} disabled={arScale <= SCALES[0]} className="icon-btn sm disabled:opacity-40" aria-label="Smaller text" title="Smaller text">
-        <Icon name="smaller" size={14} />
-      </button>
-      <span className="rv-size">{Math.round(arScale * 100)}%</span>
-      <button onClick={() => stepScale(1)} disabled={arScale >= SCALES[SCALES.length - 1]} className="icon-btn sm disabled:opacity-40" aria-label="Larger text" title="Larger text">
-        <Icon name="larger" size={14} />
-      </button>
-      <span className="rv-sep" aria-hidden="true" />
-      <button
-        onClick={() => setFocusMode((f) => !f)}
-        className={`icon-btn sm ${focusMode ? "on" : ""}`}
-        aria-pressed={focusMode}
-        aria-label="One sentence at a time"
-        title="One sentence at a time"
-      >
-        <Icon name="sentence" size={14} />
-      </button>
-      <span className="rv-sep" aria-hidden="true" />
-      <ActionMenu
-        items={[
+  const menuItems: MenuItem[] = [
           {
             label: "Mark all known",
             onClick: async () => {
@@ -1219,7 +1219,7 @@ function ReadingView({
               try {
                 const { marked } = await api.markAllKnown(text.id);
                 const statuses = { ...text.statuses };
-                for (const s of text.sentences)
+                for (const s of [text.titleSentence, ...text.sentences])
                   for (const t of s.tokens) if (isWordToken(t)) statuses[t.lemma_key] = "known";
                 onChange({ ...text, statuses });
                 flash(`${marked} words marked known`);
@@ -1267,7 +1267,7 @@ function ReadingView({
               setStudyFocus((n) => n + 1);
             },
           },
-          { label: "Shortcuts (?)", onClick: () => setShowHelp((h) => !h) },
+          ...(phone ? [] : [{ label: "Shortcuts (?)", onClick: () => setShowHelp((h) => !h) }]),
           {
             label: "Delete note",
             danger: true,
@@ -1282,10 +1282,160 @@ function ReadingView({
               }
             },
           },
-        ]}
-      />
+  ];
+
+  // the tools live at the top of the side panel, so the title row stays clean
+  const toolsEl = (
+    <div className="rv-tools tile-tools">
+      <button onClick={() => stepScale(-1)} disabled={arScale <= SCALES[0]} className="icon-btn sm disabled:opacity-40" aria-label="Smaller text" title="Smaller text">
+        <Icon name="smaller" size={14} />
+      </button>
+      <span className="rv-size">{Math.round(arScale * 100)}%</span>
+      <button onClick={() => stepScale(1)} disabled={arScale >= SCALES[SCALES.length - 1]} className="icon-btn sm disabled:opacity-40" aria-label="Larger text" title="Larger text">
+        <Icon name="larger" size={14} />
+      </button>
+      <span className="rv-sep" aria-hidden="true" />
+      <button
+        onClick={() => setFocusMode((f) => !f)}
+        className={`icon-btn sm ${focusMode ? "on" : ""}`}
+        aria-pressed={focusMode}
+        aria-label="One sentence at a time"
+        title="One sentence at a time"
+      >
+        <Icon name="sentence" size={14} />
+      </button>
+      <span className="rv-sep" aria-hidden="true" />
+      <ActionMenu items={menuItems} />
     </div>
   );
+
+  // ---- a phone: read on top, press at the bottom ----
+  if (phone) {
+    const count = meaningfulIdx.indexOf(sentenceIdx) + 1;
+    const dock = (
+      <div className="phone-dock" ref={dockRef} dir="ltr">
+        {current && cursor && (
+          <WordPanel
+            key={current.lemma_key}
+            phone
+            token={current}
+            status={text.statuses[current.lemma_key]}
+            importance={starsOf(current.lemma_key)}
+            autoDetails={detailsFor === current.lemma_key}
+            onStatus={tag}
+            onImportance={setStars}
+            onError={setError}
+            onEditMeaning={(g, r) => saveMeaning(current.lemma_key, g, r)}
+            source="auto"
+            overridden={!!text.overrides?.[current.lemma_key]}
+          />
+        )}
+        {focusMode && (
+          <nav className="phone-nav" aria-label="Sentences">
+            <button onClick={() => moveSentence(1)} disabled={!hasNext} className="pn-btn" aria-label="Next sentence">
+              <Icon name="prev" size={18} />
+              <span>next</span>
+            </button>
+            <span className="pn-mid">
+              <button
+                onClick={() => setShowEn((v) => !v)}
+                aria-pressed={showEn}
+                className={`pn-en ${showEn ? "on" : ""}`}
+                title="Show the English"
+              >
+                en
+              </button>
+              <span className="pn-count" aria-label={`Sentence ${count} of ${meaningfulIdx.length}`}>
+                {count}/{meaningfulIdx.length}
+              </span>
+            </span>
+            <button onClick={() => moveSentence(-1)} disabled={!hasPrev} className="pn-btn" aria-label="Previous sentence">
+              <span>back</span>
+              <Icon name="next" size={18} />
+            </button>
+          </nav>
+        )}
+      </div>
+    );
+    const phoneItems: MenuItem[] = [
+      { label: `Larger text (${Math.round(arScale * 100)}%)`, onClick: () => stepScale(1), keepOpen: true, disabled: arScale >= SCALES[SCALES.length - 1] },
+      { label: "Smaller text", onClick: () => stepScale(-1), keepOpen: true, disabled: arScale <= SCALES[0] },
+      { label: focusMode ? "Show the whole text" : "One sentence at a time", onClick: () => setFocusMode((f) => !f) },
+    ];
+    return (
+      <div className="phone-read" style={{ paddingBottom: dockH + 16 }}>
+        {error && <p className="mt-2 text-sm" style={{ color: "var(--ink-red)", fontFamily: "var(--font-latin)" }}>{error}</p>}
+        {notice && (
+          <p className="rv-toast hand" role="status">
+            {notice}
+          </p>
+        )}
+        {showStudy && (
+          <StudyPanel text={text} onChange={onChange} flash={flash} focusKey={studyFocus} onClose={() => setShowStudy(false)} />
+        )}
+        {selRange && !dragging && (
+          <SelectionBar end={selRange[1]} quote={selQuote} focus={noteOpen} onSave={addNote} onClose={clearSel} />
+        )}
+
+        <NoteHead text={text} onChange={onChange} titleWords={renderSentence(-1)} />
+        <div className="phone-bar">
+          <NoteTracker text={text} onCards={onCards} />
+          <ActionMenu items={[...phoneItems, ...menuItems]} />
+        </div>
+
+        {focusMode ? (
+          <div
+            key={sentenceIdx}
+            className={`frame sent-card sent-live phone-sent ar rounded-sm leading-loose ${turnDir > 0 ? "enter-next" : "enter-prev"}`}
+            style={{ fontSize: "calc(1.3rem * var(--ar-scale, 1))" }}
+            onTouchStart={(e) => (swipe.current = { x: e.touches[0].clientX, y: e.touches[0].clientY })}
+            onTouchEnd={(e) => {
+              const from = swipe.current;
+              swipe.current = null;
+              if (!from) return;
+              const dx = e.changedTouches[0].clientX - from.x;
+              const dy = e.changedTouches[0].clientY - from.y;
+              // a sideways swipe turns the sentence: to the right is the next one, as an Arabic page turns
+              if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) moveSentence(dx > 0 ? 1 : -1);
+            }}
+          >
+            {renderSentence(sentenceIdx)}
+          </div>
+        ) : (
+          <div className="frame tile-sentence phone-sent ar rounded-sm leading-loose" style={{ fontSize: "calc(1.3rem * var(--ar-scale, 1))" }}>
+            {visibleSentences.map((si) => (
+              <span key={si}>{renderSentence(si)}</span>
+            ))}
+          </div>
+        )}
+
+        {focusMode && showEn && (
+          <SentenceCard
+            sentence={text.sentences[sentenceIdx]}
+            highlighted={new Set()}
+            compact={false}
+            preset={text.analysis?.sentences?.[String(sentenceIdx)]}
+            context={
+              `Article: ${text.title}` +
+              (sentenceIdx > 0 ? ` - previous sentence: ${text.sentences[sentenceIdx - 1].text}` : "")
+            }
+          />
+        )}
+
+        {cursor && notes.some((n) => covers(n, cursor)) && (
+          <NotesHere
+            notes={notes.filter((n) => covers(n, cursor))}
+            onUpdated={(note) => patchNotes((ns) => ns.map((n) => (n.id === note.id ? note : n)))}
+            onDeleted={(id) => patchNotes((ns) => ns.filter((n) => n.id !== id))}
+            onError={(e) => setError(e)}
+          />
+        )}
+
+        {createPortal(dock, document.body)}
+        <audio ref={audioRef} hidden />
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -1718,7 +1868,9 @@ function WordPanel({
   onEditMeaning,
   overridden,
   source,
+  phone = false,
 }: {
+  phone?: boolean;
   token: Token;
   status: string | undefined;
   importance: number;
@@ -1815,105 +1967,105 @@ function WordPanel({
   const pos = token.pos ? POS[token.pos] ?? token.pos : null;
   const roots = (token.root ?? "").split(" ").filter(Boolean);
 
-  return (
-    <div className="sticky wp">
-      <div className="wp-head">
-        <div className="wp-meta">
-          {source !== "auto" && <span className={`src src-${source}`}>{source}</span>}
-          <Stars value={importance} onChange={onImportance} />
-        </div>
-        <span className="wp-say">
-          <SpeakButton text={token.diac || token.word} onError={onError} />
-          <span className="ar wp-word">{token.diac}</span>
-        </span>
-      </div>
-
-      <div className="wp-line">
-        <span className="wp-roots" dir="rtl">
-          {roots.length > 0 ? (
-            roots.map((r, i) => (
-              <span key={i} className="root-l ar">{r}</span>
-            ))
-          ) : (
-            <span className="wp-dim">no root</span>
-          )}
-        </span>
-        <span className="ar wp-lemma">{token.lemma}</span>
-      </div>
-
-      <div className="wp-meaning">
-        {editing ? (
-          <input
-            autoFocus
-            value={gDraft}
-            onChange={(e) => setGDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") saveEdit();
-              if (e.key === "Escape") setEditing(false);
-            }}
-            placeholder="meaning"
-            className="hand wp-input wp-gloss"
-          />
+  const rootsEl = (
+    <div className="wp-line">
+      <span className="wp-roots" dir="rtl">
+        {roots.length > 0 ? (
+          roots.map((r, i) => (
+            <span key={i} className="root-l ar">{r}</span>
+          ))
         ) : (
-          <>
-            <span className="hand wp-gloss">{cleanGloss(token.gloss)}</span>
-            <button onClick={startEdit} title="Edit meaning and root" aria-label="Edit meaning" className="icon-btn sm">
-              <Icon name="pencil" size={13} />
-            </button>
-          </>
+          <span className="wp-dim">no root</span>
         )}
-      </div>
+      </span>
+      <span className="ar wp-lemma">{token.lemma}</span>
+    </div>
+  );
 
-      {editing && (
-        <div className="wp-edit">
-          <input
-            dir="rtl"
-            value={rDraft}
-            onChange={(e) => setRDraft(e.target.value)}
-            placeholder="root, e.g. ك ت ب"
-            className="ar wp-input"
-          />
-          <button onClick={saveEdit} className="wp-go">save</button>
-          <button onClick={() => setEditing(false)} className="wp-quiet">cancel</button>
-          {overridden && (
-            <button onClick={resetEdit} className="wp-quiet">reset</button>
-          )}
-          {editErr && <span dir="ltr" className="wp-err">{editErr}</span>}
-        </div>
+  const glossInput = (
+    <input
+      autoFocus
+      value={gDraft}
+      onChange={(e) => setGDraft(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") saveEdit();
+        if (e.key === "Escape") setEditing(false);
+        e.stopPropagation();
+      }}
+      placeholder="meaning"
+      className="hand wp-input wp-gloss"
+    />
+  );
+
+  const pencil = (
+    <button onClick={startEdit} title="Edit meaning and root" aria-label="Edit meaning" className="icon-btn sm">
+      <Icon name="pencil" size={13} />
+    </button>
+  );
+
+  const editEl = editing && (
+    <div className="wp-edit">
+      <input
+        dir="rtl"
+        value={rDraft}
+        onChange={(e) => setRDraft(e.target.value)}
+        onKeyDown={(e) => e.stopPropagation()}
+        placeholder="root, e.g. ك ت ب"
+        className="ar wp-input"
+      />
+      <button onClick={saveEdit} className="wp-go">save</button>
+      <button onClick={() => setEditing(false)} className="wp-quiet">cancel</button>
+      {overridden && (
+        <button onClick={resetEdit} className="wp-quiet">reset</button>
       )}
+      {editErr && <span dir="ltr" className="wp-err">{editErr}</span>}
+    </div>
+  );
 
-      <StatusSlider value={status} onChange={onStatus} />
+  const noteInput = (
+    <>
+      <input
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") saveNote();
+          e.stopPropagation();
+        }}
+        placeholder="note…"
+        className="wp-note"
+      />
+      <button onClick={saveNote} title="Save note" aria-label="Save note" className={`icon-btn sm ${noteSaved ? "on" : ""}`}>
+        <Icon name="check" size={13} />
+      </button>
+    </>
+  );
 
-      <div className="wp-foot">
-        <input
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && saveNote()}
-          placeholder="note…"
-          className="wp-note"
-        />
-        <button onClick={saveNote} title="Save note" aria-label="Save note" className={`icon-btn sm ${noteSaved ? "on" : ""}`}>
-          <Icon name="check" size={13} />
-        </button>
-        <button
-          onClick={() => {
-            setOpen((o) => !o);
-            if (!info && !loadingInfo) loadDetails();
-          }}
-          title="Details (d)"
-          aria-label="Details"
-          aria-expanded={open}
-          className={`info-i ${open ? "on" : ""}`}
-        >
-          i
-        </button>
-      </div>
+  const infoBtn = (
+    <button
+      onClick={() => {
+        setOpen((o) => !o);
+        if (!info && !loadingInfo) loadDetails();
+      }}
+      title="Details (d)"
+      aria-label="Details"
+      aria-expanded={open}
+      className={`info-i ${open ? "on" : ""}`}
+    >
+      i
+    </button>
+  );
 
+  const detailsEl = (
+    <>
       {open && pos && (
         <div className="mt-2 flex items-baseline justify-between text-xs" style={{ fontFamily: "var(--font-latin)" }}>
           <span className="lbl">type</span>
           <span>{pos}</span>
         </div>
+      )}
+
+      {open && loadingInfo && !info && (
+        <p className="wp-dim mt-2 text-xs" style={{ fontFamily: "var(--font-latin)" }}>loading details…</p>
       )}
 
       {open && info && (
@@ -1955,6 +2107,73 @@ function WordPanel({
           )}
         </div>
       )}
+    </>
+  );
+
+  // a phone: one line for the word (hear it, the word, its meaning, its
+  // importance, more), then four buttons for its level; the rest behind "i"
+  if (phone) {
+    return (
+      <div className="wp wp-phone">
+        <div className="wpp-top">
+          <SpeakButton text={token.diac || token.word} onError={onError} />
+          <span className="ar wp-word">{token.diac}</span>
+          {editing ? glossInput : <span className="hand wpp-gloss">{cleanGloss(token.gloss)}</span>}
+          <Stars value={importance} onChange={onImportance} />
+          {infoBtn}
+        </div>
+        <StatusSlider variant="chips" value={status} onChange={onStatus} />
+        {(open || editing) && (
+          <div className="wpp-more">
+            <div className="wpp-more-line">
+              {rootsEl}
+              {!editing && pencil}
+            </div>
+            {editEl}
+            <div className="wp-foot">{noteInput}</div>
+            {detailsEl}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="sticky wp">
+      <div className="wp-head">
+        <div className="wp-meta">
+          {source !== "auto" && <span className={`src src-${source}`}>{source}</span>}
+          <Stars value={importance} onChange={onImportance} />
+        </div>
+        <span className="wp-say">
+          <SpeakButton text={token.diac || token.word} onError={onError} />
+          <span className="ar wp-word">{token.diac}</span>
+        </span>
+      </div>
+
+      {rootsEl}
+
+      <div className="wp-meaning">
+        {editing ? (
+          glossInput
+        ) : (
+          <>
+            <span className="hand wp-gloss">{cleanGloss(token.gloss)}</span>
+            {pencil}
+          </>
+        )}
+      </div>
+
+      {editEl}
+
+      <StatusSlider value={status} onChange={onStatus} />
+
+      <div className="wp-foot">
+        {noteInput}
+        {infoBtn}
+      </div>
+
+      {detailsEl}
     </div>
   );
 }

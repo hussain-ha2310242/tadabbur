@@ -1373,6 +1373,12 @@ textarea::placeholder {
 .desk-sky {
   overflow: visible;
 }
+/* the spheres may reach past the screen's edge: clip them there, or a phone
+   lays the page out wider than the screen and the bottom dock falls below it */
+html,
+body {
+  overflow-x: clip;
+}
 .desk-dust {
   inset: 0;
   width: 100%;
@@ -2823,7 +2829,7 @@ h2.note-title::before {
 /* the reader's short messages float at the foot of the screen */
 .rv-toast {
   position: fixed;
-  bottom: 1.6rem;
+  bottom: calc(var(--dock-h, 0px) + 1.6rem);
   left: 50%;
   z-index: 45;
   margin: 0;
@@ -3413,7 +3419,7 @@ h2.note-title::before {
 /* ---- the demo bar: a small pill at the bottom while trying the app ---- */
 .demo-bar {
   position: fixed;
-  bottom: 14px;
+  bottom: calc(var(--dock-h, 0px) + 14px);
   left: 50%;
   z-index: 40;
   display: flex;
@@ -3756,62 +3762,15 @@ h2.note-title::before {
   100% { opacity: 0; transform: translate(-50%, -10px); }
 }
 
-/* ---------------------------------------------------------------- stars */
-.stars {
-  display: inline-flex;
-  align-items: center;
-  gap: 0;
+/* ---------------------------------------------------------------- importance */
+/* the new asterisk pops in */
+.imp-pop {
+  display: inline-block;
+  animation: imp-pop 380ms cubic-bezier(0.34, 1.56, 0.64, 1);
 }
-.star {
-  display: inline-grid;
-  place-items: center;
-  padding: 2px 1px;
-  border: 0;
-  background: none;
-  color: var(--muted);
-  cursor: pointer;
-  transition: color 160ms ease, scale 160ms cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-.star svg {
-  fill: transparent;
-  stroke: currentColor;
-  stroke-width: 1.7;
-  stroke-linejoin: round;
-  opacity: 0.55;
-  transition: fill 160ms ease, opacity 160ms ease;
-}
-.star:hover {
-  scale: 1.15;
-}
-.star:focus {
-  outline: none;
-}
-.star:focus-visible {
-  outline: 1.5px solid var(--gold);
-  outline-offset: 1px;
-  border-radius: 4px;
-}
-.star:hover svg {
-  opacity: 1;
-}
-.star.on {
-  color: var(--gold);
-}
-.star.on svg {
-  fill: currentColor;
-  opacity: 1;
-}
-/* hovering a star previews the stars up to it */
-.stars:hover .star:has(~ .star:hover) svg,
-.stars .star:hover svg {
-  opacity: 1;
-}
-.star-pop {
-  animation: star-pop 420ms cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-@keyframes star-pop {
-  0% { scale: 0.4; rotate: -30deg; }
-  60% { scale: 1.35; rotate: 8deg; }
+@keyframes imp-pop {
+  0% { scale: 0.5; rotate: -25deg; }
+  60% { scale: 1.3; rotate: 6deg; }
   100% { scale: 1; rotate: 0deg; }
 }
 
@@ -3918,7 +3877,7 @@ h2.note-title::before {
 @keyframes pending-fade {
   to { opacity: 0.3; }
 }
-.note-item-head .stars {
+.note-item-head .wp-imp {
   flex: none;
 }
 /* over a kept phrase, the hover note shows its meaning first */
@@ -3950,7 +3909,7 @@ h2.note-title::before {
 @media (prefers-reduced-motion: reduce) {
   .answers,
   .review-stamp,
-  .star-pop,
+  .imp-pop,
   .speak-btn.busy,
   .tok-pop-a,
   .tok-pop-b,
@@ -3959,6 +3918,376 @@ h2.note-title::before {
   .slider-cap.just,
   .slider-saved,
   .note-item-meaning.pending {
+    animation: none;
+  }
+}
+
+/* ---------------------------------------------------------------- the deck's keys (laptops) */
+.deck-head-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.7rem;
+}
+.keys-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+.keys-btn:hover,
+.keys-btn.on {
+  background: var(--gold-soft);
+  color: var(--fg);
+}
+.keys-pop {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.5rem);
+  z-index: 20;
+  display: grid;
+  gap: 0.4rem;
+  min-width: 15.5rem;
+  padding: 0.8rem 0.95rem;
+  border: 1px solid color-mix(in srgb, var(--fg) 12%, transparent);
+  border-radius: 3px;
+  background: var(--bg);
+  box-shadow: 0 12px 28px -14px var(--shadow);
+  font-family: var(--font-latin);
+  animation: keys-in 160ms ease-out both;
+}
+@keyframes keys-in {
+  from { opacity: 0; transform: translateY(-4px); }
+}
+.keys-row {
+  display: grid;
+  grid-template-columns: 6.4rem 1fr;
+  align-items: baseline;
+  gap: 0.6rem;
+  font-size: 12.5px;
+}
+.keys-k {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  gap: 0.2rem;
+}
+.keys-k kbd {
+  min-width: 1.35rem;
+  padding: 0 0.3rem;
+  border: 1px solid color-mix(in srgb, var(--fg) 22%, transparent);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--bg-deep);
+  color: var(--fg);
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  text-align: center;
+}
+.keys-what {
+  color: var(--muted);
+}
+/* phones and tablets have no keyboard: no keys button, and no key hints */
+@media (max-width: 640px), (hover: none) and (pointer: coarse) {
+  .keys-btn,
+  .keys-pop,
+  .show-answer kbd {
+    display: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .keys-pop {
+    animation: none;
+  }
+}
+
+/* ================================================================ a phone: read on top, press at the bottom
+   The thumb rests at the bottom of the screen, so everything you press there
+   lives in one dock: the word (hear it, its meaning, its importance), four
+   buttons for its level, and the sentence arrows. The top keeps only the title,
+   the progress line and the menu, and the reading itself. */
+.phone-read {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  margin-top: 0.3rem;
+}
+/* the link and tags stay on the computer view; the edit pencil still shows them */
+.phone-read .note-head-meta {
+  display: none;
+}
+.phone-read .note-title {
+  font-size: calc(1.05rem * var(--ar-scale, 1));
+  line-height: 1.65;
+}
+.phone-read .note-head-edit {
+  opacity: 0.55;
+}
+.phone-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.phone-bar .note-track {
+  flex: 1 1 auto;
+  margin: 0;
+}
+.phone-sent {
+  padding: 1.05rem 1.1rem 1.15rem;
+  font-size: calc(1.2rem * var(--ar-scale, 1)) !important;
+  line-height: 2 !important;
+  min-height: 0;
+  touch-action: pan-y;
+}
+.phone-read .sticky-ctx,
+.phone-read .notes-here {
+  margin-top: 0;
+}
+
+.phone-dock {
+  position: fixed;
+  left: 8px;
+  right: 8px;
+  bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+  z-index: 35;
+  display: grid;
+  gap: 0.55rem;
+  max-width: 34rem;
+  margin: 0 auto;
+  padding: 0.6rem 0.65rem 0.6rem;
+  border: 1px solid color-mix(in srgb, var(--fg) 10%, transparent);
+  border-radius: 16px;
+  background: var(--bg-deep);
+  box-shadow: 0 -2px 6px rgb(0 0 0 / 0.04), 0 12px 32px -10px var(--shadow);
+  font-family: var(--font-latin);
+  animation: dock-in 260ms cubic-bezier(0.22, 0.9, 0.3, 1) both;
+}
+@keyframes dock-in {
+  from { opacity: 0; transform: translateY(14px); }
+}
+
+/* the word, on one line */
+.wp-phone {
+  width: 100%;
+  padding: 0;
+  transform: none;
+  background: none;
+  box-shadow: none;
+}
+.wp-phone:hover {
+  transform: none;
+  box-shadow: none;
+}
+.wpp-top {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 2.4rem;
+}
+.wpp-top .wp-word {
+  flex: none;
+  font-size: 1.45rem;
+  line-height: 1.2;
+}
+.wpp-gloss,
+.wpp-top .wp-gloss {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 1.02rem;
+  color: var(--fg);
+}
+.wpp-top .wp-imp {
+  flex: none;
+  min-width: 2.4rem;
+  min-height: 2.4rem;
+  padding: 0 0.3rem;
+}
+.wpp-top .info-i {
+  flex: none;
+  width: 2.2rem;
+  height: 2.2rem;
+  font-size: 1.05rem;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--muted) 35%, transparent);
+}
+.wpp-top .speak-btn {
+  flex: none;
+  width: 2.3rem;
+  height: 2.3rem;
+}
+
+/* the level: four buttons, big enough for a thumb */
+.level-chips {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.35rem;
+}
+.level-chip {
+  min-height: 2.75rem;
+  padding: 0 0.2rem;
+  border: 1.5px solid color-mix(in srgb, var(--c) 45%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--c) 7%, transparent);
+  color: var(--c);
+  font-family: var(--font-latin);
+  font-size: 12.5px;
+  font-weight: 700;
+  line-height: 1.1;
+  cursor: pointer;
+  transition: background-color 160ms ease, color 160ms ease, scale 140ms ease;
+}
+.level-chip:active {
+  scale: 0.94;
+}
+.level-chip.on {
+  border-color: var(--c);
+  background: var(--c);
+  color: var(--bg-deep);
+}
+.chip-pop {
+  display: inline-block;
+  animation: chip-pop 380ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@keyframes chip-pop {
+  0% { scale: 0.7; }
+  60% { scale: 1.12; }
+  100% { scale: 1; }
+}
+.chip-tick {
+  font-weight: 800;
+}
+
+/* behind "i": the root, edit, the note and the details, scrolling if long */
+.wpp-more {
+  display: grid;
+  gap: 0.35rem;
+  max-height: 38vh;
+  overflow-y: auto;
+  padding-top: 0.45rem;
+  border-top: 1px dashed color-mix(in srgb, var(--fg) 16%, transparent);
+  font-size: 0.9rem;
+}
+.wpp-more-line {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.wpp-more-line .wp-line {
+  flex: 1;
+  margin: 0;
+}
+.wpp-more .wp-note {
+  font-size: 16px; /* 16px or more: the phone does not zoom in when you type */
+}
+.wp-phone .wp-input {
+  font-size: 16px;
+}
+
+/* the sentences: big arrows at the edges, the English and the count between */
+.phone-nav {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 0.45rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid color-mix(in srgb, var(--fg) 9%, transparent);
+}
+.wp-phone + .phone-nav {
+  margin-top: 0.05rem;
+}
+.pn-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  min-height: 2.75rem;
+  border: 0;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  color: var(--fg);
+  font-family: var(--font-latin);
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 140ms ease, scale 140ms ease;
+}
+.pn-btn:active:not(:disabled) {
+  scale: 0.95;
+  background: color-mix(in srgb, var(--fg) 12%, transparent);
+}
+.pn-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.pn-mid {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+.pn-en {
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  border: 1.5px solid color-mix(in srgb, var(--gold) 45%, transparent);
+  border-radius: 999px;
+  background: none;
+  color: var(--gold);
+  font-family: var(--font-hand);
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+.pn-en.on {
+  background: var(--gold);
+  color: var(--bg-deep);
+}
+.pn-count {
+  min-width: 2.4rem;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* the deck on a phone: show answer, then the four answers, at the bottom */
+.deck-dock {
+  gap: 0;
+}
+.deck-dock .show-answer {
+  width: 100%;
+  min-height: 3rem;
+  border-radius: 12px;
+  font-size: 15px;
+}
+.deck-dock .answers {
+  gap: 0.35rem;
+}
+.deck-dock .ans {
+  min-height: 3.3rem;
+  border-radius: 12px;
+}
+.deck-dock .ans-label {
+  font-size: 14px;
+}
+.deck-dock .ans-when {
+  font-size: 11.5px;
+}
+@media (max-width: 640px) {
+  /* the card sits higher with room under it for the dock */
+  .review-card {
+    min-height: 13rem;
+    margin-bottom: 6.5rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .phone-dock,
+  .chip-pop {
     animation: none;
   }
 }

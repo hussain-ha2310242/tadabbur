@@ -29,7 +29,8 @@ export function StatusSlider({
   empty?: string;
   /** leave out the caption; the thumb and its colour show the level */
   hideCaption?: boolean;
-  variant?: "track" | "dial";
+  /** "chips": four buttons, for a thumb on a phone */
+  variant?: "track" | "dial" | "chips";
 }) {
   const idx = LEVELS.findIndex((l) => l.status === value);
   const trackRef = useRef<HTMLDivElement>(null);
@@ -104,6 +105,32 @@ export function StatusSlider({
     onPointerUp,
     onPointerCancel,
   };
+
+  if (variant === "chips") {
+    return (
+      <div className="level-chips" role="radiogroup" aria-label="Familiarity">
+        {LEVELS.map((l, i) => {
+          const on = i === idx;
+          return (
+            <button
+              key={l.status}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              onClick={() => !on && onChange(l.status)}
+              className={`level-chip ${on ? "on" : ""}`}
+              style={{ "--c": `var(--st-${i})` } as CSSProperties}
+            >
+              <span key={on ? saved : 0} className={on && saved ? "chip-pop" : undefined}>
+                {on && saved > 0 && <span className="chip-tick" aria-hidden="true">✓ </span>}
+                {l.label}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    );
+  }
 
   if (variant === "dial") {
     return (
