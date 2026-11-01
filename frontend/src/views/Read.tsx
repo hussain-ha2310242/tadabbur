@@ -14,6 +14,7 @@ import { applyTextScale } from "../theme";
 import { usePhone } from "../usePhone";
 import { copyToClaude } from "../Handoff";
 import { getWordInfo, hasMeaning } from "../wordInfo";
+import { WordDetails } from "../WordDetails";
 import { createPortal } from "react-dom";
 
 type Cursor = { si: number; ti: number };
@@ -908,6 +909,8 @@ function ReadingView({
     setError(null);
     setPulse((p) => ({ key, n: (p?.n ?? 0) + 1 }));
     onChange({ ...text, statuses: { ...text.statuses, [key]: status } });
+    // a word inside a saved phrase is reviewed through the phrase, not on its own card
+    const inPhrase = !!cursor && (text.annotations ?? []).some((n) => covers(n, cursor));
     try {
       if (was) await api.updateVocab(key, { status });
       else
@@ -919,6 +922,7 @@ function ReadingView({
           gloss: current.gloss,
           status,
           importance: starsOf(key),
+          in_deck: !inPhrase,
         });
     } catch (e) {
       const back = { ...text.statuses };
@@ -1013,9 +1017,17 @@ function ReadingView({
     const [a, b] = selRange;
     const quote = selQuote;
     const context = Array.from({ length: b.si - a.si + 1 }, (_, i) => sentenceOf(a.si + i).text).join(" ");
+    // the selection's words: they leave the deck and are reviewed inside this card
+    const keys: string[] = [];
+    for (let si = a.si; si <= b.si; si++) {
+      const toks = sentenceOf(si).tokens;
+      const lo = si === a.si ? a.ti : 0;
+      const hi = si === b.si ? b.ti : toks.length - 1;
+      for (let ti = lo; ti <= hi; ti++) if (isWordToken(toks[ti])) keys.push(toks[ti].lemma_key);
+    }
     setError(null);
     try {
-      const note = await api.createNote({
+      const { folded, ...note } = await api.createNote({
         text_id: text.id,
         start_si: a.si,
         start_ti: a.ti,
@@ -1023,10 +1035,12 @@ function ReadingView({
         end_ti: b.ti,
         comment,
         quote,
+        keys,
       });
       clearSel();
       patchNotes((ns) => [...ns, note]);
-      flash(comment ? "note saved" : "phrase saved");
+      const what = comment ? "note saved" : "phrase saved";
+      flash(folded ? `${what}: its words now review as this one card` : what);
       const meaning = await api.noteMeaning(note.id, quote, context).catch(() => null);
       if (meaning) patchNotes((ns) => ns.map((n) => (n.id === note.id ? { ...n, meaning } : n)));
     } catch (e) {
@@ -1312,6 +1326,7 @@ function ReadingView({
           <WordPanel
             key={current.lemma_key}
             phone
+            sentence={sentenceOf(cursor.si).text}
             token={current}
             status={text.statuses[current.lemma_key]}
             importance={starsOf(current.lemma_key)}
@@ -1541,6 +1556,7 @@ function ReadingView({
             <>
               <WordPanel
                 key={current.lemma_key}
+                sentence={sentenceOf(cursor.si).text}
                 token={current}
                 status={text.statuses[current.lemma_key]}
                 importance={starsOf(current.lemma_key)}
@@ -1860,8 +1876,10 @@ function WordPanel({
   overridden,
   source,
   phone = false,
+  sentence,
 }: {
   phone?: boolean;
+  sentence?: string;
   token: Token;
   status: string | undefined;
   importance: number;
@@ -1874,6 +1892,10 @@ function WordPanel({
   source: "edited" | "claude" | "auto";
 }) {
   const [info, setInfo] = useState<WordInfo | null>(null);
+  const [infoErr, setInfoErr] = useState<string | null>(null);
+  // the word as it is in this sentence: its details read the sentence, for the
+  // meaning here and examples in that sense
+  const entry = { lemma_key: token.lemma_key, lemma: token.lemma, pos: token.pos, root: token.root, word: token.word, sentence };
   const [loadingInfo, setLoadingInfo] = useState(false);
   const [note, setNote] = useState("");
   const [noteSaved, setNoteSaved] = useState(false);
@@ -1887,13 +1909,14 @@ function WordPanel({
   const loadDetails = useCallback(async () => {
     setLoadingInfo(true);
     try {
-      setInfo(await getWordInfo({ lemma_key: token.lemma_key, lemma: token.lemma, pos: token.pos, root: token.root }));
-    } catch {
-      /* surfaced via missing info */
+      setInfoErr(null);
+      setInfo(await getWordInfo(entry));
+    } catch (e) {
+      setInfoErr(String(e instanceof Error ? e.message : e));
     } finally {
       setLoadingInfo(false);
     }
-  }, [token]);
+  }, [token, sentence]);
 
   // a word saved without a meaning: look it up at once (the same details the
   // "i" shows), show it, and keep it in your wallet once the word is there
@@ -1904,7 +1927,7 @@ function WordPanel({
     if (!missing) return;
     let live = true;
     setFinding(true);
-    getWordInfo({ lemma_key: token.lemma_key, lemma: token.lemma, pos: token.pos, root: token.root })
+    getWordInfo(entry)
       .then((i) => {
         if (!live) return;
         setInfo(i);
@@ -1915,7 +1938,7 @@ function WordPanel({
     return () => {
       live = false;
     };
-  }, [missing, token.lemma_key, token.lemma, token.pos, token.root]);
+  }, [missing, token.lemma_key, token.lemma, token.pos, token.root, sentence]);
   useEffect(() => {
     if (missing && found && status) {
       api.setMissingMeaning(token.lemma_key, found, token.root ? null : info?.root ?? null).catch(() => {});
@@ -1971,12 +1994,6 @@ function WordPanel({
     }
   }
 
-  const POS: Record<string, string> = {
-    noun: "noun", verb: "verb", adj: "adj", adjective: "adj", adv: "adv", prep: "prep",
-    conj: "conj", pron: "pron", part: "part", det: "det", abbrev: "abbr",
-    noun_prop: "name", pron_dem: "pron", verb_pseudo: "verb",
-  };
-  const pos = token.pos ? POS[token.pos] ?? token.pos : null;
   const roots = (token.root ?? "").split(" ").filter(Boolean);
 
   const rootsEl = (
@@ -2067,59 +2084,10 @@ function WordPanel({
     </button>
   );
 
-  const detailsEl = (
-    <>
-      {open && pos && (
-        <div className="mt-2 flex items-baseline justify-between text-xs" style={{ fontFamily: "var(--font-latin)" }}>
-          <span className="lbl">type</span>
-          <span>{pos}</span>
-        </div>
-      )}
-
-      {open && loadingInfo && !info && (
-        <p className="wp-dim mt-2 text-xs" style={{ fontFamily: "var(--font-latin)" }}>loading details…</p>
-      )}
-
-      {open && info && (
-        <div className="mt-2 space-y-2 border-t pt-2" style={{ borderColor: "color-mix(in srgb, var(--fg) 12%, transparent)" }}>
-          {info.similar && info.similar.length > 0 && (
-            <div>
-              <div className="lbl">similar</div>
-              <ul className="mt-0.5 space-y-0.5">
-                {info.similar.map((s, i) => (
-                  <li key={i} className="flex items-baseline justify-between gap-3">
-                    <span className="ar text-xs">{s.word}</span>
-                    <span className="hand text-xs" style={{ color: "var(--muted)" }}>{s.meaning}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {info.conjugation && Object.keys(info.conjugation).length > 0 && (
-            <div>
-              <div className="lbl">forms</div>
-              <dl className="mt-0.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
-                {Object.entries(info.conjugation).map(([k, v]) => (
-                  <div key={k} className="contents">
-                    <dt className="text-xs" style={{ color: "var(--muted)" }}>{k}</dt>
-                    <dd className="ar text-xs" style={{ color: "var(--gold)" }}>{v}</dd>
-                  </div>
-                ))}
-              </dl>
-            </div>
-          )}
-
-          {info.example?.ar && (
-            <div>
-              <div className="lbl">example</div>
-              <p className="ar text-xs">{info.example.ar}</p>
-              <p className="hand text-xs" style={{ color: "var(--muted)" }}>{info.example.en}</p>
-            </div>
-          )}
-        </div>
-      )}
-    </>
+  const detailsEl = open && (
+    <div className="wp-details">
+      <WordDetails info={info} pos={token.pos} loading={loadingInfo} error={infoErr} />
+    </div>
   );
 
   // a phone: one line for the word (hear it, the word, its meaning, its

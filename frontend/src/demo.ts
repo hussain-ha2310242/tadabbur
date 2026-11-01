@@ -157,7 +157,8 @@ function counts() {
 
 function dueNow() {
   const now = Date.now();
-  const due = (x: { status: string; due: string | null }) => x.status !== "known" && (!x.due || Date.parse(x.due) <= now);
+  const due = (x: { status: string; due: string | null; in_deck?: boolean }) =>
+    x.in_deck !== false && x.status !== "known" && (!x.due || Date.parse(x.due) <= now);
   return [...state.words.values()].filter(due).length + state.notes.filter(due).length;
 }
 
@@ -264,6 +265,7 @@ const demoCalls: Calls = {
         notes: entry.notes ?? null,
         importance: entry.importance ?? 0,
         status,
+        in_deck: entry.in_deck ?? true,
         created_at: new Date().toISOString(),
         ...shared.newCard(),
       });
@@ -293,7 +295,15 @@ const demoCalls: Calls = {
     state.notes.push(note);
     log("new_words");
     log("marks");
-    return noteOut(note);
+    let folded = 0;
+    for (const k of new Set(n.keys ?? [])) {
+      const w = state.words.get(k);
+      if (w && w.in_deck !== false) {
+        w.in_deck = false;
+        folded++;
+      }
+    }
+    return { ...noteOut(note), folded };
   },
   noteMeaning: async (id) => {
     const n = state.notes.find((x) => x.id === id);
@@ -413,7 +423,8 @@ const demoCalls: Calls = {
   },
   dueWords: async () => {
     const now = Date.now();
-    const isDue = (x: { status: string; due: string | null }) => x.status !== "known" && (!x.due || Date.parse(x.due) <= now);
+    const isDue = (x: { status: string; due: string | null; in_deck?: boolean }) =>
+      x.in_deck !== false && x.status !== "known" && (!x.due || Date.parse(x.due) <= now);
     const words: DueWord[] = [...state.words.values()].filter(isDue).map((w) => {
       const { created_at: _c, ...rest } = w;
       void _c;
@@ -464,6 +475,22 @@ const demoCalls: Calls = {
       }
     log("marks");
     return { marked };
+  },
+  contextFor: async (lemmaKey) => {
+    for (const s of state.sentences) {
+      const tok = s.tokens.find((x) => x.lemma_key === lemmaKey);
+      if (tok) return { sentence: s.text, word: tok.word, title: state.title };
+    }
+    return null;
+  },
+  setInDeck: async (key, inDeck) => {
+    const item = key.startsWith(shared.NOTE_PREFIX)
+      ? state.notes.find((n) => `${shared.NOTE_PREFIX}${n.id}` === key)
+      : state.words.get(key);
+    if (!item) throw new Error("404: not found");
+    item.in_deck = inDeck;
+    shared.announce();
+    return { key, in_deck: inDeck };
   },
   setMissingMeaning: async (lemmaKey, gloss, root) => {
     const w = state.words.get(lemmaKey);

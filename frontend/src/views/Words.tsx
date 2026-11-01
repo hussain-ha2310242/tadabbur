@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api } from "../api";
+import { api, shared } from "../api";
 import type { Annotation, WalletWord } from "../api";
 import { Icon } from "../icons";
 import { cleanGloss } from "../gloss";
@@ -47,10 +47,14 @@ export default function Words() {
   useEffect(() => setLimit(PAGE), [query, only, sort]);
 
   const counts = useMemo(() => {
-    const c: Record<string, number> = { all: words?.length ?? 0 };
-    for (const w of words ?? []) c[w.status] = (c[w.status] ?? 0) + 1;
+    const c: Record<string, number> = { all: words?.length ?? 0, out: 0 };
+    for (const w of words ?? []) {
+      c[w.status] = (c[w.status] ?? 0) + 1;
+      if (w.in_deck === false) c.out += 1;
+    }
+    c.out += notes.filter((n) => n.in_deck === false).length;
     return c;
-  }, [words]);
+  }, [words, notes]);
 
   const shown = useMemo(() => {
     if (!words) return [];
@@ -58,7 +62,7 @@ export default function Words() {
     const qRoot = q.replace(/\s+/g, "");
     const list = words.filter(
       (w) =>
-        (only === "all" || w.status === only) &&
+        (only === "all" || w.status === only || (only === "out" && w.in_deck === false)) &&
         (!q ||
           norm(w.display).includes(q) ||
           norm(w.lemma_key).includes(q) ||
@@ -76,13 +80,34 @@ export default function Words() {
     const q = norm(query);
     return notes.filter(
       (n) =>
-        !q ||
+        (only !== "out" || n.in_deck === false) &&
+        (!q ||
         norm(n.quote).includes(q) ||
         norm(n.meaning).includes(q) ||
         norm(n.comment).includes(q) ||
-        norm(n.title).includes(q),
+        norm(n.title).includes(q)),
     );
-  }, [notes, query]);
+  }, [notes, query, only]);
+
+  // in the deck or out of it; the change shows at once and is undone if it fails
+  async function setWordInDeck(w: WalletWord, inDeck: boolean) {
+    setWords((ws) => ws?.map((x) => (x.lemma_key === w.lemma_key ? { ...x, in_deck: inDeck } : x)) ?? ws);
+    try {
+      await api.setInDeck(w.lemma_key, inDeck);
+    } catch (e) {
+      setWords((ws) => ws?.map((x) => (x.lemma_key === w.lemma_key ? { ...x, in_deck: !inDeck } : x)) ?? ws);
+      setError(String(e));
+    }
+  }
+  async function setNoteInDeck(n: Annotation, inDeck: boolean) {
+    setNotes((ns) => ns.map((x) => (x.id === n.id ? { ...x, in_deck: inDeck } : x)));
+    try {
+      await api.setInDeck(`${shared.NOTE_PREFIX}${n.id}`, inDeck);
+    } catch (e) {
+      setNotes((ns) => ns.map((x) => (x.id === n.id ? { ...x, in_deck: !inDeck } : x)));
+      setError(String(e));
+    }
+  }
 
   async function setNoteLevel(n: Annotation, status: string) {
     const before = n.status;
@@ -147,6 +172,17 @@ export default function Words() {
             <Icon name="pencil" size={11} />
             phrases &amp; notes <b>{notes.length}</b>
           </button>
+          {counts.out > 0 && (
+            <button
+              onClick={() => setOnly("out")}
+              aria-pressed={only === "out"}
+              className={`wallet-chip ${only === "out" ? "on" : ""}`}
+              title="Words and phrases you took out of the deck: they are never due"
+            >
+              <Icon name="deckOff" size={11} />
+              out of deck <b>{counts.out}</b>
+            </button>
+          )}
         </div>
         <label className="wallet-sort hand">
           sort
@@ -160,6 +196,29 @@ export default function Words() {
 
       {error && <p className="me-error hand">{error}</p>}
 
+      {only === "out" && shownNotes.length > 0 && (
+        <ul className="wallet-list">
+          {shownNotes.map((n) => (
+            <li key={n.id} className="wallet-row wallet-note out">
+              <span className="wallet-ar ar wallet-note-quote" dir="rtl" title={n.quote}>
+                {n.quote}
+                <em className="wallet-out-tag">not in deck</em>
+              </span>
+              <span className="wallet-meaning">
+                <DeckToggle inDeck={false} onChange={(v) => setNoteInDeck(n, v)} />
+                <span className="wallet-gloss hand" dir="auto">
+                  {n.meaning || "-"}
+                </span>
+                {n.title && <span className="wallet-from hand">{n.title}</span>}
+              </span>
+              <span className="wallet-level">
+                <StatusSlider value={n.status} onChange={(st) => setNoteLevel(n, st)} hideCaption />
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+
       {only === "notes" ? (
         shownNotes.length === 0 ? (
           <p className="wallet-empty hand">
@@ -168,11 +227,13 @@ export default function Words() {
         ) : (
           <ul className="wallet-list">
             {shownNotes.map((n) => (
-              <li key={n.id} className="wallet-row wallet-note">
+              <li key={n.id} className={`wallet-row wallet-note ${n.in_deck === false ? "out" : ""}`}>
                 <span className="wallet-ar ar wallet-note-quote" dir="rtl" title={n.quote}>
                   {n.quote}
+                  {n.in_deck === false && <em className="wallet-out-tag">not in deck</em>}
                 </span>
                 <span className="wallet-meaning">
+                  <DeckToggle inDeck={n.in_deck !== false} onChange={(v) => setNoteInDeck(n, v)} />
                   <span className="wallet-gloss hand" dir="auto">
                     {n.meaning || "-"}
                   </span>
@@ -194,16 +255,20 @@ export default function Words() {
           </ul>
         )
       ) : shown.length === 0 ? (
-        <p className="wallet-empty hand">{query ? "no word matches that search" : "no words at this level yet"}</p>
+        only === "out" ? null : (
+          <p className="wallet-empty hand">{query ? "no word matches that search" : "no words at this level yet"}</p>
+        )
       ) : (
         <ul className="wallet-list">
           {shown.slice(0, limit).map((w) => (
-            <li key={w.lemma_key} className="wallet-row">
+            <li key={w.lemma_key} className={`wallet-row ${w.in_deck === false ? "out" : ""}`}>
               <span className="wallet-ar ar" dir="rtl">
                 {w.display}
                 {!!w.is_phrase && <em className="wallet-tag hand">phrase</em>}
+                {w.in_deck === false && <em className="wallet-out-tag">not in deck</em>}
               </span>
               <span className="wallet-meaning">
+                <DeckToggle inDeck={w.in_deck !== false} onChange={(v) => setWordInDeck(w, v)} />
                 <span className="wallet-gloss hand">{cleanGloss(w.gloss)}</span>
                 {w.root && ARABIC.test(w.root) && (
                   <span className="wallet-root ar" dir="rtl" title="root">
@@ -228,5 +293,19 @@ export default function Words() {
         </button>
       )}
     </section>
+  );
+}
+
+/** In the deck or out of it: a small button on each row. */
+function DeckToggle({ inDeck, onChange }: { inDeck: boolean; onChange: (inDeck: boolean) => void }) {
+  return (
+    <button
+      onClick={() => onChange(!inDeck)}
+      className="wallet-deck"
+      title={inDeck ? "Remove from the deck: it stays here, and is never due" : "Put back in the deck"}
+      aria-label={inDeck ? "Remove from the deck" : "Put back in the deck"}
+    >
+      <Icon name={inDeck ? "deckOff" : "deckOn"} size={14} />
+    </button>
   );
 }

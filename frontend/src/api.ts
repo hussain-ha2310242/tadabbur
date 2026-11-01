@@ -84,18 +84,22 @@ export type Annotation = {
   comment: string; // your note; empty means a phrase
   status: string;
   importance: number; // stars, 0-3
+  in_deck?: boolean; // false once removed from the deck (it stays in your wallet)
   due: string | null;
   created_at: string | null;
   title?: string; // in the full list: the text it belongs to
 };
 
 export type WordInfo = {
-  meaning: string;
-  type_ar?: string;
+  meaning: string; // the usual dictionary meaning
+  in_context?: string | null; // what it means in the sentence it was met in
+  expression?: { ar: string; en: string } | null; // a set phrase it forms there (بمعزل عن: apart from)
+  type_ar?: string | null;
   root?: string | null;
   similar?: { word: string; meaning: string }[];
   conjugation?: Record<string, string>;
-  example?: { ar: string; en: string };
+  examples?: { ar: string; en: string }[]; // two short sentences, in the same sense
+  example?: { ar: string; en: string } | null; // older details had one
 };
 
 export type Settings = Record<string, string>;
@@ -157,7 +161,7 @@ export type Stats = {
 };
 
 /** A word in the wallet. */
-export type WalletWord = DueWord & { created_at: string | null };
+export type WalletWord = DueWord & { created_at: string | null; in_deck?: boolean };
 
 // ---------------------------------------------------------------- helpers
 
@@ -550,12 +554,13 @@ const noteOf = (r: NoteRow, title?: string): Annotation => ({
   comment: r.comment,
   status: r.status,
   importance: r.importance ?? 0,
+  in_deck: r.in_deck ?? true,
   due: r.due,
   created_at: r.created_at,
   ...(title !== undefined ? { title } : {}),
 });
 
-const NOTE_COLS = "id, text_id, start_si, start_ti, end_si, end_ti, quote, meaning, comment, status, importance, due, created_at";
+const NOTE_COLS = "id, text_id, start_si, start_ti, end_si, end_ti, quote, meaning, comment, status, importance, in_deck, due, created_at";
 
 /** A text's sentence by index; -1 is the title. */
 const sentenceAt = (sentences: Sentence[], title: Sentence | null | undefined, si: number) =>
@@ -580,7 +585,7 @@ function spanParts(
 }
 
 type WordRow = Omit<WalletWord, "is_phrase"> & { is_phrase: boolean };
-const WORD_COLS = "lemma_key, display, is_phrase, root, pos, gloss, notes, status, importance, due, created_at";
+const WORD_COLS = "lemma_key, display, is_phrase, root, pos, gloss, notes, status, importance, in_deck, due, created_at";
 const walletOf = (r: WordRow): WalletWord => ({ ...r, is_phrase: r.is_phrase ? 1 : 0 });
 
 let settingsCache: Promise<Settings> | null = null;
@@ -745,6 +750,7 @@ const calls = {
     is_phrase?: boolean;
     status?: string;
     importance?: number;
+    in_deck?: boolean; // false: a word inside a saved phrase, reviewed through the phrase
   }) => {
     const status = entry.status ?? "not_known";
     const importance = entry.importance ?? 0;
@@ -769,6 +775,7 @@ const calls = {
       notes: entry.notes ?? null,
       status,
       importance,
+      in_deck: entry.in_deck ?? true,
       ...newCard(),
     });
     if (error?.code === "23505") {
@@ -833,7 +840,9 @@ const calls = {
     end_ti: number;
     comment: string;
     quote: string;
-  }): Promise<Annotation> => {
+    /** the selection's words: they leave the deck, and are reviewed through this card */
+    keys?: string[];
+  }): Promise<Annotation & { folded: number }> => {
     let a: [number, number] = [n.start_si, n.start_ti];
     let b: [number, number] = [n.end_si, n.end_ti];
     if (b[0] < a[0] || (b[0] === a[0] && b[1] < a[1])) [a, b] = [b, a];
@@ -858,7 +867,17 @@ const calls = {
     ) as NoteRow;
     void logActivity("new_words"); // a phrase or note is something new to learn
     void logActivity("marks");
-    return noteOf(row);
+    // its words are reviewed inside it now, not each on their own card (they
+    // stay in your wallet with their levels, and can be put back in the deck)
+    const keys = [...new Set((n.keys ?? []).filter(Boolean))].slice(0, 200);
+    let folded = 0;
+    if (keys.length) {
+      const moved = (await supabase.from("words").update({ in_deck: false }).in("lemma_key", keys).eq("in_deck", true).select("lemma_key"))
+        .data;
+      folded = moved?.length ?? 0;
+      if (folded) announce();
+    }
+    return { ...noteOf(row), folded };
   },
 
   /** The selection's meaning as a whole, read in its sentence, saved on the
@@ -1129,6 +1148,7 @@ const calls = {
           .from("words")
           .select(`${WORD_COLS}, card_json`)
           .neq("status", "known")
+          .eq("in_deck", true)
           .or(`due.is.null,due.lte."${now}"`)
           .order("importance", { ascending: false })
           .order("due", { ascending: true, nullsFirst: true })
@@ -1139,6 +1159,7 @@ const calls = {
           .from("annotations")
           .select(`${NOTE_COLS}, card_json, texts(title, tokens_json, title_tokens)`)
           .neq("status", "known")
+          .eq("in_deck", true)
           .or(`due.is.null,due.lte."${now}"`)
           .order("due", { ascending: true, nullsFirst: true })
           .range(a, b),
@@ -1170,6 +1191,18 @@ const calls = {
         ...spanParts(n.texts?.tokens_json ?? [], n, n.texts?.title_tokens),
       }));
     return [...wordCards, ...noteCards];
+  },
+
+  /** Take a card out of the deck, or put it back. A word or phrase out of the
+   *  deck keeps its level and notes in your wallet; it is just never due. */
+  setInDeck: async (key: string, inDeck: boolean) => {
+    const isNote = key.startsWith(NOTE_PREFIX);
+    const rows = isNote
+      ? must(await supabase.from("annotations").update({ in_deck: inDeck }).eq("id", Number(key.slice(NOTE_PREFIX.length))).select("id"))
+      : must(await supabase.from("words").update({ in_deck: inDeck }).eq("lemma_key", key).select("lemma_key"));
+    if (!rows?.length) throw new Error(isNote ? "404: note not found" : "404: word not in wallet");
+    announce();
+    return { key, in_deck: inDeck };
   },
 
   /** An answer in the deck (Anki's again, hard, good, easy); a note's card is
@@ -1207,8 +1240,33 @@ const calls = {
     return { marked: marked ?? 0 };
   },
 
-  enrich: (entry: { lemma_key: string; lemma: string; pos?: string | null; root?: string | null }) =>
-    serverJson<WordInfo>("enrich", entry),
+  enrich: (entry: {
+    lemma_key: string;
+    lemma: string;
+    pos?: string | null;
+    root?: string | null;
+    word?: string | null; // as written in the text
+    sentence?: string | null; // the sentence it was met in: the meaning there, and examples in that sense
+  }) => serverJson<WordInfo>("enrich", entry),
+
+  /** A sentence from your texts with this word in it, for its details. */
+  contextFor: async (lemmaKey: string): Promise<{ sentence: string; word: string; title: string } | null> => {
+    const rows = must(
+      await supabase
+        .from("texts")
+        .select("title, tokens_json")
+        .contains("word_keys", JSON.stringify([lemmaKey]))
+        .order("id", { ascending: false })
+        .limit(1),
+    ) as { title: string; tokens_json: Sentence[] }[] | null;
+    const t = rows?.[0];
+    if (!t) return null;
+    for (const s of t.tokens_json) {
+      const tok = s.tokens.find((x) => x.lemma_key === lemmaKey);
+      if (tok) return { sentence: s.text, word: tok.word, title: t.title };
+    }
+    return null;
+  },
 
   /** Keep a meaning (and a root) found for a word saved without one. Only
    *  fills what is missing: a meaning or root already there is never changed. */

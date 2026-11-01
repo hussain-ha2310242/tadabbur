@@ -5,7 +5,8 @@ import { Icon } from "../icons";
 import { SpeakButton, speak } from "../Speak";
 import { nextStars, Stars } from "../Stars";
 import { usePhone } from "../usePhone";
-import { getWordInfo, hasMeaning } from "../wordInfo";
+import { getContext, getWordInfo, hasMeaning } from "../wordInfo";
+import { WordDetails } from "../WordDetails";
 import { createPortal } from "react-dom";
 
 /** Anki's answers, in order, with their keys. */
@@ -23,30 +24,43 @@ const KEYS: [string, string][] = [
   ["i", "importance * ** ***"],
   ["h", "hear the word"],
   ["d", "more about it (after the answer)"],
+  ["x", "remove from the deck (undo just after)"],
   ["?", "show or hide these keys"],
 ];
 
-const POS: Record<string, string> = {
-  noun: "noun", verb: "verb", adj: "adjective", adjective: "adjective", adv: "adverb", prep: "preposition",
-  conj: "conjunction", pron: "pronoun", part: "particle", det: "determiner", abbrev: "abbreviation",
-  noun_prop: "name", pron_dem: "demonstrative", verb_pseudo: "verb",
-};
-
-/** More about the card, behind its "i": for a word, its type, similar words,
- *  forms and an example (fetched once); for a phrase or note, the whole
- *  sentence it sits in and the article it came from. */
+/** More about the card, behind its "i". For a word: a sentence from your
+ *  texts it appears in, what it means there (and any set phrase it forms),
+ *  then its family, forms and two examples in that sense. For a phrase or
+ *  note: the whole sentence it sits in. */
 function CardInfo({ card }: { card: DueWord }) {
   const isNote = card.kind === "note";
+  const [ctx, setCtx] = useState<{ sentence: string; word: string } | null>(null);
   const [info, setInfo] = useState<WordInfo | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(!isNote);
   useEffect(() => {
     if (isNote) return;
     let live = true;
-    getWordInfo({ lemma_key: card.lemma_key, lemma: card.display, pos: card.pos, root: card.root })
-      .then((i) => live && setInfo(i))
-      .catch((e) => live && setErr(String(e instanceof Error ? e.message : e)))
-      .finally(() => live && setLoading(false));
+    (async () => {
+      const where = await getContext(card.lemma_key);
+      if (!live) return;
+      setCtx(where);
+      try {
+        const i = await getWordInfo({
+          lemma_key: card.lemma_key,
+          lemma: card.display,
+          pos: card.pos,
+          root: card.root,
+          word: where?.word ?? null,
+          sentence: where?.sentence ?? null,
+        });
+        if (live) setInfo(i);
+      } catch (e) {
+        if (live) setErr(String(e instanceof Error ? e.message : e));
+      } finally {
+        if (live) setLoading(false);
+      }
+    })();
     return () => {
       live = false;
     };
@@ -69,50 +83,9 @@ function CardInfo({ card }: { card: DueWord }) {
     );
   }
 
-  const pos = card.pos ? POS[card.pos] ?? card.pos : null;
   return (
     <div className="review-info">
-      {pos && (
-        <div className="review-info-row">
-          <span className="lbl">type</span>
-          <span>{pos}</span>
-        </div>
-      )}
-      {loading && <p className="review-info-dim">loading more…</p>}
-      {err && <p className="review-info-dim">{err}</p>}
-      {info?.similar && info.similar.length > 0 && (
-        <div>
-          <div className="lbl">similar</div>
-          <ul className="review-info-list">
-            {info.similar.map((x, i) => (
-              <li key={i}>
-                <span className="ar">{x.word}</span>
-                <span className="hand">{x.meaning}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {info?.conjugation && Object.keys(info.conjugation).length > 0 && (
-        <div>
-          <div className="lbl">forms</div>
-          <ul className="review-info-list">
-            {Object.entries(info.conjugation).map(([k, v]) => (
-              <li key={k}>
-                <span className="ar review-info-gold">{v}</span>
-                <span>{k}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {info?.example?.ar && (
-        <div>
-          <div className="lbl">example</div>
-          <p className="ar review-info-ar" dir="rtl">{info.example.ar}</p>
-          <p className="hand review-info-en">{info.example.en}</p>
-        </div>
-      )}
+      <WordDetails info={info} pos={card.pos} loading={loading} error={err} sentence={ctx?.sentence} word={ctx?.word} />
     </div>
   );
 }
@@ -185,6 +158,7 @@ export default function Review({ textId }: { textId?: number } = {}) {
   const [error, setError] = useState<string | null>(null);
   const [seed, setSeed] = useState(0); // bumps per card: flips direction and replays the entrance
   const [infoOpen, setInfoOpen] = useState(false); // the card's "i": more about it, after the answer
+  const [removed, setRemoved] = useState<{ card: DueWord; k: number } | null>(null); // for undo
   const [stamp, setStamp] = useState<{ a: Answer; label: string; k: number } | null>(null);
   const [applied, setApplied] = useState<Filters>(start); // what the queue is showing
   const [draft, setDraft] = useState<Filters>(start); // what the panel is set to
@@ -335,6 +309,49 @@ export default function Review({ textId }: { textId?: number } = {}) {
     api.grade(current.lemma_key, a, out).catch((e) => setError(`not saved: ${String(e)}`));
   }
 
+  // take the card out of the deck: it stays in your wallet with its level, and
+  // can be put back from there (or with undo, for a few seconds)
+  function removeCard() {
+    if (!current) return;
+    const card = current;
+    const [next, q, l] = advance(queue, learning);
+    setCurrent(next);
+    setQueue(q);
+    setLearning(l);
+    setRevealed(false);
+    setInfoOpen(false);
+    setSeed((s) => s + 1);
+    setRemoved({ card, k: (removed?.k ?? 0) + 1 });
+    api.setInDeck(card.lemma_key, false).catch((e) => {
+      setError(`not removed: ${String(e)}`);
+      setRemoved(null);
+      putBack(card);
+    });
+  }
+  // the card on show right now, for undo and failed saves that land later
+  const currentRef = useRef<DueWord | null>(null);
+  currentRef.current = current;
+  function putBack(card: DueWord) {
+    const now = currentRef.current;
+    if (now && now.lemma_key !== card.lemma_key) setQueue((q) => [now, ...q]);
+    setCurrent(card);
+    setRevealed(false);
+    setInfoOpen(false);
+    setSeed((s) => s + 1);
+  }
+  function undoRemove() {
+    if (!removed) return;
+    const { card } = removed;
+    setRemoved(null);
+    putBack(card);
+    api.setInDeck(card.lemma_key, true).catch((e) => setError(String(e)));
+  }
+  useEffect(() => {
+    if (!removed) return;
+    const t = window.setTimeout(() => setRemoved(null), 6000);
+    return () => window.clearTimeout(t);
+  }, [removed]);
+
   // stars on the card: a word's in the wallet, a note's on the note
   async function setImportance(n: number) {
     if (!current) return;
@@ -363,6 +380,8 @@ export default function Review({ textId }: { textId?: number } = {}) {
       } else if (e.key === "i") setImportance(nextStars(current?.importance ?? 0));
       else if (e.key === "h") sayIt();
       else if (e.key === "d" && revealed) setInfoOpen((v) => !v);
+      else if (e.key === "x") removeCard();
+      else if (e.key === "z" && removed) undoRemove();
       else if (e.key === "?") setShowKeys((v) => !v);
       else if (e.key === "Escape") setShowKeys(false);
       else if (revealed && ["1", "2", "3", "4"].includes(e.key)) answer(ANSWERS[Number(e.key) - 1].a);
@@ -565,12 +584,21 @@ export default function Review({ textId }: { textId?: number } = {}) {
     </>
   );
 
+  const removedToast = removed && (
+    <div key={removed.k} className="deck-toast hand" role="status" dir="ltr">
+      <Icon name="deckOff" size={15} />
+      <span>removed from your deck</span>
+      <button onClick={undoRemove}>undo</button>
+    </div>
+  );
+
   if (loading) return <div className="mx-auto max-w-xl">{header}</div>;
 
   if (!current) {
     return (
       <div className="mx-auto max-w-xl">
         {header}
+        {removedToast}
         <div className="sticky review-card" style={{ transform: "rotate(-0.8deg)" }}>
           <p className="hand text-center text-2xl">
             {done > 0 ? "the desk is clear" : activeCount ? "nothing matches" : "nothing due"}
@@ -645,6 +673,14 @@ export default function Review({ textId }: { textId?: number } = {}) {
               {isNote ? (current.comment ? "note" : "phrase") : enFront ? "en → ar" : "ar → en"}
             </span>
             <span className="review-tools">
+              <button
+                onClick={removeCard}
+                className="deck-off"
+                title="Remove from the deck (x): it stays in your words, and you can put it back there"
+                aria-label="Remove from the deck"
+              >
+                <Icon name="deckOff" size={15} />
+              </button>
               {canHear && <SpeakButton text={current.display} onError={setError} />}
               <Stars value={current.importance ?? 0} onChange={setImportance} />
               {revealed && (
@@ -722,6 +758,7 @@ export default function Review({ textId }: { textId?: number } = {}) {
         </div>
       </div>
       {phone && createPortal(<div className="phone-dock deck-dock" dir="ltr">{foot}</div>, document.body)}
+      {removedToast}
     </div>
   );
 }

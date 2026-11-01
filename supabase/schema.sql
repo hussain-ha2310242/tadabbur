@@ -49,6 +49,7 @@ create table public.words (
   notes text,
   status text not null default 'not_known' check (status in ('not_known', 'hard', 'easy', 'known')),
   importance smallint not null default 0 check (importance between 0 and 3),
+  in_deck boolean not null default true, -- false: out of the deck, never due (still in your wallet)
   card_json jsonb, -- the FSRS card (ts-fsrs)
   due timestamptz,
   created_at timestamptz not null default now(),
@@ -100,6 +101,7 @@ create table public.annotations (
   comment text not null default '',
   status text not null default 'not_known' check (status in ('not_known', 'hard', 'easy', 'known')),
   importance smallint not null default 0 check (importance between 0 and 3),
+  in_deck boolean not null default true, -- false: out of the deck, never due
   card_json jsonb,
   due timestamptz,
   created_at timestamptz not null default now()
@@ -328,9 +330,9 @@ returns jsonb language sql stable security invoker set search_path = '' as $$
                                     where w.user_id = auth.uid() and not w.is_phrase group by w.status) s), '{}'::jsonb),
     'phrases', (select count(*) from public.words w where w.user_id = auth.uid() and w.is_phrase),
     'due', (select count(*) from public.words w
-             where w.user_id = auth.uid() and w.status <> 'known' and (w.due is null or w.due <= now()))
+             where w.user_id = auth.uid() and w.in_deck and w.status <> 'known' and (w.due is null or w.due <= now()))
          + (select count(*) from public.annotations a
-             where a.user_id = auth.uid() and a.status <> 'known' and (a.due is null or a.due <= now())),
+             where a.user_id = auth.uid() and a.in_deck and a.status <> 'known' and (a.due is null or a.due <= now())),
     'texts', (select count(*) from public.texts t where t.user_id = auth.uid()),
     'reviews', (select coalesce(sum(a.reviews), 0) from public.activity a where a.user_id = auth.uid())
   )
