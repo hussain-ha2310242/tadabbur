@@ -28,9 +28,11 @@ export type IconName =
   | "cards"
   | "tap"
   | "speaker"
+  | "words"
   | "keys"
   | "deckOff"
-  | "deckOn";
+  | "deckOn"
+  | "trash";
 
 // hand-drawn-feel line icons; each one reads without a label
 const SHAPES: Record<IconName, ReactNode> = {
@@ -161,11 +163,24 @@ const SHAPES: Record<IconName, ReactNode> = {
       <path d="M8 4.5h10a2 2 0 0 1 2 2V16M10.5 10.5v6M7.5 13.5h6" />
     </>
   ),
+  // a bin: "delete for good"
+  trash: (
+    <>
+      <path d="M4.5 7h15M9.5 7V4.8h5V7M6.5 7l.9 12.2h9.2L17.5 7M10.3 10.5v5.6M13.7 10.5v5.6" />
+    </>
+  ),
   // a keyboard: "the keys"
   keys: (
     <>
       <rect x="3" y="6.5" width="18" height="11" rx="2" />
       <path d="M7 10h.01M10.3 10h.01M13.7 10h.01M17 10h.01M7 13.6h.01M17 13.6h.01M9.8 13.6h4.4" />
+    </>
+  ),
+  // a list of words: "my words"
+  words: (
+    <>
+      <path d="M9 7h11M9 12h11M9 17h7" />
+      <path d="M4.5 7h.01M4.5 12h.01M4.5 17h.01" />
     </>
   ),
   // a speaker with sound coming out: "hear it"

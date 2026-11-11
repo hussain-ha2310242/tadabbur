@@ -117,7 +117,7 @@ export function StatusSlider({
               type="button"
               role="radio"
               aria-checked={on}
-              onClick={() => !on && onChange(l.status)}
+              onClick={() => onChange(l.status)} // again on the same level: the reader moves on
               className={`level-chip ${on ? "on" : ""}`}
               style={{ "--c": `var(--st-${i})` } as CSSProperties}
             >

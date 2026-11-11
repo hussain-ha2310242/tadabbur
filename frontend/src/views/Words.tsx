@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, shared } from "../api";
+import { useLater } from "../later";
 import type { Annotation, WalletWord } from "../api";
 import { Icon } from "../icons";
 import { cleanGloss } from "../gloss";
@@ -89,6 +90,41 @@ export default function Words() {
     );
   }, [notes, query, only]);
 
+  // delete for good: gone from the list at once, deleted after a few seconds
+  // unless undone
+  const later = useLater(6000);
+  const [gone, setGone] = useState<{ k: number; what: string; undo: () => void } | null>(null);
+  useEffect(() => {
+    if (!gone) return;
+    const t = window.setTimeout(() => setGone(null), 6000);
+    return () => window.clearTimeout(t);
+  }, [gone]);
+  function deleteWordRow(w: WalletWord) {
+    setWords((ws) => ws?.filter((x) => x.lemma_key !== w.lemma_key) ?? ws);
+    later.schedule(w.lemma_key, () => api.deleteWord(w.lemma_key).catch((e) => setError(String(e))));
+    setGone({
+      k: (gone?.k ?? 0) + 1,
+      what: w.display,
+      undo: () => {
+        if (later.cancel(w.lemma_key)) setWords((ws) => (ws ? [w, ...ws] : ws));
+        setGone(null);
+      },
+    });
+  }
+  function deleteNoteRow(n: Annotation) {
+    const key = `${shared.NOTE_PREFIX}${n.id}`;
+    setNotes((ns) => ns.filter((x) => x.id !== n.id));
+    later.schedule(key, () => api.deleteWord(key).catch((e) => setError(String(e))));
+    setGone({
+      k: (gone?.k ?? 0) + 1,
+      what: n.quote,
+      undo: () => {
+        if (later.cancel(key)) setNotes((ns) => [n, ...ns]);
+        setGone(null);
+      },
+    });
+  }
+
   // in the deck or out of it; the change shows at once and is undone if it fails
   async function setWordInDeck(w: WalletWord, inDeck: boolean) {
     setWords((ws) => ws?.map((x) => (x.lemma_key === w.lemma_key ? { ...x, in_deck: inDeck } : x)) ?? ws);
@@ -140,6 +176,13 @@ export default function Words() {
         <h2 className="me-title">my words</h2>
         <span className="wallet-count hand">{words.length}</span>
       </header>
+      {gone && (
+        <div key={gone.k} className="deck-toast hand" role="status" dir="ltr">
+          <Icon name="trash" size={15} />
+          <span>deleted for good</span>
+          <button onClick={gone.undo}>undo</button>
+        </div>
+      )}
 
       <div className="wallet-tools">
         <input
@@ -206,6 +249,7 @@ export default function Words() {
               </span>
               <span className="wallet-meaning">
                 <DeckToggle inDeck={false} onChange={(v) => setNoteInDeck(n, v)} />
+                <DeleteButton onDelete={() => deleteNoteRow(n)} />
                 <span className="wallet-gloss hand" dir="auto">
                   {n.meaning || "-"}
                 </span>
@@ -234,6 +278,7 @@ export default function Words() {
                 </span>
                 <span className="wallet-meaning">
                   <DeckToggle inDeck={n.in_deck !== false} onChange={(v) => setNoteInDeck(n, v)} />
+                  <DeleteButton onDelete={() => deleteNoteRow(n)} />
                   <span className="wallet-gloss hand" dir="auto">
                     {n.meaning || "-"}
                   </span>
@@ -269,6 +314,7 @@ export default function Words() {
               </span>
               <span className="wallet-meaning">
                 <DeckToggle inDeck={w.in_deck !== false} onChange={(v) => setWordInDeck(w, v)} />
+                <DeleteButton onDelete={() => deleteWordRow(w)} />
                 <span className="wallet-gloss hand">{cleanGloss(w.gloss)}</span>
                 {w.root && ARABIC.test(w.root) && (
                   <span className="wallet-root ar" dir="rtl" title="root">
@@ -306,6 +352,20 @@ function DeckToggle({ inDeck, onChange }: { inDeck: boolean; onChange: (inDeck: 
       aria-label={inDeck ? "Remove from the deck" : "Put back in the deck"}
     >
       <Icon name={inDeck ? "deckOff" : "deckOn"} size={14} />
+    </button>
+  );
+}
+
+/** Delete for good (with undo just after). */
+function DeleteButton({ onDelete }: { onDelete: () => void }) {
+  return (
+    <button
+      onClick={onDelete}
+      className="wallet-del"
+      title="Delete for good: its card, level and notes. You can undo just after."
+      aria-label="Delete for good"
+    >
+      <Icon name="trash" size={14} />
     </button>
   );
 }

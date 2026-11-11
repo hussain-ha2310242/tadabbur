@@ -1,9 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import Library from "./views/Read";
 import Review from "./views/Review";
 import Words from "./views/Words";
-import { ProfileChip, ProfilePage } from "./views/Profile";
+import { ProfileChip, ProfilePage, StreakStar, useStats } from "./views/Profile";
+import { Icon, type IconName } from "./icons";
+import { useDockHeight, usePhone } from "./usePhone";
 import { applyCardStyle, applyTextScale, applyTheme } from "./theme";
 import { DeskSky } from "./DeskSky";
 import { PaperDefs, PaperSheet } from "./Paper";
@@ -30,12 +32,63 @@ function Kashida({ side }: { side: "left" | "right" }) {
   );
 }
 
+/** The phone's tab bar: the four places of the app, always in thumb reach.
+ *  Hidden while reading or reviewing, where the screen's foot holds those
+ *  controls instead. */
+function PhoneTabs({ view, go }: { view: View; go: (v: View) => void }) {
+  const ref = useRef<HTMLElement>(null);
+  useDockHeight(ref, true);
+  const stats = useStats(view);
+  const tab = (v: View, label: string, icon: IconName | null, extra?: React.ReactNode) => (
+    <button
+      className={`tab ${view === v ? "on" : ""}`}
+      aria-current={view === v ? "page" : undefined}
+      onClick={() => go(v)}
+    >
+      <span className="tab-icon">
+        {icon ? <Icon name={icon} size={22} /> : extra}
+        {v === "review" && stats && stats.due > 0 && <span className="tab-badge">{stats.due > 99 ? "99+" : stats.due}</span>}
+      </span>
+      <span className="tab-label">{label}</span>
+    </button>
+  );
+  return (
+    <nav ref={ref} className="tabbar" aria-label="Sections" dir="ltr">
+      {tab("library", "Read", "library")}
+      {tab("review", "Deck", "cards")}
+      {tab("words", "Words", "words")}
+      {tab(
+        "profile",
+        stats?.streak.current ? `${stats.streak.current}-day` : "Me",
+        null,
+        <StreakStar lit={!!stats?.streak.today} size={21} />,
+      )}
+    </nav>
+  );
+}
+
 export default function App() {
   const [view, setView] = useState<View>("library");
   // bumping this remounts the home view, which closes any text open in the reader
   const [homeKey, setHomeKey] = useState(0);
   // the deck opened from a note shows that note's cards only
   const [reviewNote, setReviewNote] = useState<number | null>(null);
+  // a phone: tabs at the foot on the main pages, a back arrow while reading or reviewing
+  const phone = usePhone();
+  const [reading, setReading] = useState(false);
+  const inside = (view === "library" && reading) || view === "review";
+  const goHome = () => {
+    setView("library");
+    setHomeKey((k) => k + 1);
+  };
+  const go = (v: View) => {
+    if (v === "library") goHome();
+    else {
+      if (v === "review") setReviewNote(null);
+      setView(v);
+    }
+    window.scrollTo({ top: 0 });
+  };
 
   useEffect(() => {
     api
@@ -56,13 +109,15 @@ export default function App() {
         <PaperSheet />
         <ProfileChip onOpen={() => setView("profile")} refresh={view} />
         {/* the top row never changes: the name in the middle goes home, between two fading rules */}
+        {phone && inside && (
+          <button className="phone-back" onClick={goHome} aria-label="Back">
+            <Icon name="prev" size={22} />
+          </button>
+        )}
         <div className="brand-row flex min-h-[3.5rem] items-center gap-5">
           <Kashida side="left" />
           <button
-            onClick={() => {
-              setView("library");
-              setHomeKey((k) => k + 1);
-            }}
+            onClick={goHome}
             className="brand ar flex-none text-center text-3xl sm:text-4xl"
             aria-label="Tadabbur, go home"
             title="Home"
@@ -77,6 +132,7 @@ export default function App() {
           {view === "library" && (
             <Library
               key={homeKey}
+              onReading={setReading}
               onReview={() => {
                 setReviewNote(null);
                 setView("review");
@@ -94,6 +150,7 @@ export default function App() {
         </div>
 
       </main>
+      {phone && !inside && <PhoneTabs view={view} go={go} />}
       <ClaudeHandoff />
     </>
   );

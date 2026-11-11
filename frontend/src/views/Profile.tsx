@@ -34,7 +34,7 @@ function streakTitle(s: Streak, p?: Progress): string {
 
 /** Fresh numbers after anything you study: the event fires once the server has
  *  counted it; a short wait folds a burst of marks into one fetch. */
-function useStats(refresh?: unknown): Stats | null {
+export function useStats(refresh?: unknown): Stats | null {
   const [stats, setStats] = useState<Stats | null>(null);
   useEffect(() => {
     let live = true;

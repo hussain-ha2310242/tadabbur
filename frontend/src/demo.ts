@@ -291,7 +291,7 @@ const demoCalls: Calls = {
     const at = (p: [number, number]) => sentenceAt(p[0])?.tokens[p[1]];
     if (!at(a) || !at(b)) throw new Error("the selection is outside the text");
     // saved at once without its meaning, like the real app; noteMeaning adds it
-    const note = { ...makeNote(a[0], a[1], b[0], b[1], (n.comment ?? "").trim().slice(0, 2000)), meaning: null };
+    const note = { ...makeNote(a[0], a[1], b[0], b[1], (n.comment ?? "").trim().slice(0, 2000)), meaning: n.meaning?.trim() || null };
     state.notes.push(note);
     log("new_words");
     log("marks");
@@ -304,6 +304,20 @@ const demoCalls: Calls = {
       }
     }
     return { ...noteOut(note), folded };
+  },
+  phraseMeaning: async (quote) => {
+    // the demo's meaning: the glosses of the words, in order
+    const glosses = quote
+      .split(/\s+/)
+      .map((w) => state.sentences.flatMap((s) => s.tokens).find((t) => t.word === w && isWord(t))?.gloss?.split(/[;,]/)[0].trim())
+      .filter(Boolean);
+    return glosses.length ? glosses.join(" ") : null;
+  },
+  deleteWord: async (key) => {
+    if (key.startsWith(shared.NOTE_PREFIX)) state.notes = state.notes.filter((n) => `${shared.NOTE_PREFIX}${n.id}` !== key);
+    else state.words.delete(key);
+    shared.announce();
+    return { ok: true };
   },
   noteMeaning: async (id) => {
     const n = state.notes.find((x) => x.id === id);

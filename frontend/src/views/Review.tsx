@@ -4,8 +4,9 @@ import { cleanGloss } from "../gloss";
 import { Icon } from "../icons";
 import { SpeakButton, speak } from "../Speak";
 import { nextStars, Stars } from "../Stars";
-import { usePhone } from "../usePhone";
+import { useDockHeight, usePhone } from "../usePhone";
 import { getContext, getWordInfo, hasMeaning } from "../wordInfo";
+import { useLater } from "../later";
 import { WordDetails } from "../WordDetails";
 import { createPortal } from "react-dom";
 
@@ -25,6 +26,7 @@ const KEYS: [string, string][] = [
   ["h", "hear the word"],
   ["d", "more about it (after the answer)"],
   ["x", "remove from the deck (undo just after)"],
+  ["del", "delete it for good (undo just after)"],
   ["?", "show or hide these keys"],
 ];
 
@@ -158,7 +160,9 @@ export default function Review({ textId }: { textId?: number } = {}) {
   const [error, setError] = useState<string | null>(null);
   const [seed, setSeed] = useState(0); // bumps per card: flips direction and replays the entrance
   const [infoOpen, setInfoOpen] = useState(false); // the card's "i": more about it, after the answer
-  const [removed, setRemoved] = useState<{ card: DueWord; k: number } | null>(null); // for undo
+  // the card just taken away, for undo: out of the deck, or deleted (which waits for undo first)
+  const [removed, setRemoved] = useState<{ card: DueWord; k: number; kind: "out" | "deleted" } | null>(null);
+  const later = useLater(6000);
   const [stamp, setStamp] = useState<{ a: Answer; label: string; k: number } | null>(null);
   const [applied, setApplied] = useState<Filters>(start); // what the queue is showing
   const [draft, setDraft] = useState<Filters>(start); // what the panel is set to
@@ -170,6 +174,7 @@ export default function Review({ textId }: { textId?: number } = {}) {
   const panelRef = useRef<HTMLDivElement>(null);
   // on a phone the answers sit at the bottom of the screen, under the thumb
   const phone = usePhone();
+  const dockRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     api.listTags().then(setTags).catch(() => {});
@@ -321,7 +326,7 @@ export default function Review({ textId }: { textId?: number } = {}) {
     setRevealed(false);
     setInfoOpen(false);
     setSeed((s) => s + 1);
-    setRemoved({ card, k: (removed?.k ?? 0) + 1 });
+    setRemoved({ card, k: (removed?.k ?? 0) + 1, kind: "out" });
     api.setInDeck(card.lemma_key, false).catch((e) => {
       setError(`not removed: ${String(e)}`);
       setRemoved(null);
@@ -339,12 +344,29 @@ export default function Review({ textId }: { textId?: number } = {}) {
     setInfoOpen(false);
     setSeed((s) => s + 1);
   }
+  // delete for good: the card goes at once; the deletion itself waits for undo
+  function deleteCard() {
+    if (!current) return;
+    const card = current;
+    const [next, q, l] = advance(queue, learning);
+    setCurrent(next);
+    setQueue(q);
+    setLearning(l);
+    setRevealed(false);
+    setInfoOpen(false);
+    setSeed((s) => s + 1);
+    setRemoved({ card, k: (removed?.k ?? 0) + 1, kind: "deleted" });
+    later.schedule(card.lemma_key, () => {
+      api.deleteWord(card.lemma_key).catch((e) => setError(`not deleted: ${String(e)}`));
+    });
+  }
   function undoRemove() {
     if (!removed) return;
-    const { card } = removed;
+    const { card, kind } = removed;
     setRemoved(null);
     putBack(card);
-    api.setInDeck(card.lemma_key, true).catch((e) => setError(String(e)));
+    if (kind === "deleted") later.cancel(card.lemma_key);
+    else api.setInDeck(card.lemma_key, true).catch((e) => setError(String(e)));
   }
   useEffect(() => {
     if (!removed) return;
@@ -381,6 +403,10 @@ export default function Review({ textId }: { textId?: number } = {}) {
       else if (e.key === "h") sayIt();
       else if (e.key === "d" && revealed) setInfoOpen((v) => !v);
       else if (e.key === "x") removeCard();
+      else if (e.key === "Delete" || e.key === "Backspace") {
+        e.preventDefault();
+        deleteCard();
+      }
       else if (e.key === "z" && removed) undoRemove();
       else if (e.key === "?") setShowKeys((v) => !v);
       else if (e.key === "Escape") setShowKeys(false);
@@ -454,7 +480,7 @@ export default function Review({ textId }: { textId?: number } = {}) {
               setShowKeys(false);
             }}
             aria-expanded={open}
-            className={link(activeCount > 0)}
+            className={`${link(activeCount > 0)} deck-filter-btn`}
           >
             filter{activeCount ? ` · ${activeCount}` : ""} {open ? "▴" : "▾"}
           </button>
@@ -586,11 +612,13 @@ export default function Review({ textId }: { textId?: number } = {}) {
 
   const removedToast = removed && (
     <div key={removed.k} className="deck-toast hand" role="status" dir="ltr">
-      <Icon name="deckOff" size={15} />
-      <span>removed from your deck</span>
+      <Icon name={removed.kind === "deleted" ? "trash" : "deckOff"} size={15} />
+      <span>{removed.kind === "deleted" ? "deleted for good" : "removed from your deck"}</span>
       <button onClick={undoRemove}>undo</button>
     </div>
   );
+
+  useDockHeight(dockRef, phone && !loading && !!current);
 
   if (loading) return <div className="mx-auto max-w-xl">{header}</div>;
 
@@ -681,6 +709,14 @@ export default function Review({ textId }: { textId?: number } = {}) {
               >
                 <Icon name="deckOff" size={15} />
               </button>
+              <button
+                onClick={deleteCard}
+                className="deck-off deck-del"
+                title="Delete for good (del): its card, level and notes. You can undo just after."
+                aria-label="Delete for good"
+              >
+                <Icon name="trash" size={15} />
+              </button>
               {canHear && <SpeakButton text={current.display} onError={setError} />}
               <Stars value={current.importance ?? 0} onChange={setImportance} />
               {revealed && (
@@ -757,7 +793,7 @@ export default function Review({ textId }: { textId?: number } = {}) {
           {!phone && <div className="review-foot">{foot}</div>}
         </div>
       </div>
-      {phone && createPortal(<div className="phone-dock deck-dock" dir="ltr">{foot}</div>, document.body)}
+      {phone && createPortal(<div ref={dockRef} className="phone-dock deck-dock" dir="ltr">{foot}</div>, document.body)}
       {removedToast}
     </div>
   );

@@ -842,6 +842,8 @@ const calls = {
     quote: string;
     /** the selection's words: they leave the deck, and are reviewed through this card */
     keys?: string[];
+    /** its meaning, when it was found before saving */
+    meaning?: string | null;
   }): Promise<Annotation & { folded: number }> => {
     let a: [number, number] = [n.start_si, n.start_ti];
     let b: [number, number] = [n.end_si, n.end_ti];
@@ -859,6 +861,7 @@ const calls = {
           end_si: b[0],
           end_ti: b[1],
           quote,
+          meaning: (n.meaning ?? "").trim() || null,
           comment: (n.comment ?? "").trim().slice(0, 2000),
           ...newCard(),
         })
@@ -882,6 +885,25 @@ const calls = {
 
   /** The selection's meaning as a whole, read in its sentence, saved on the
    *  note. Null when the AI could not be reached; the note stays either way. */
+  /** The meaning of some words as a whole, read in their sentence; shown while
+   *  you choose whether to keep them. Null when the AI could not be reached. */
+  phraseMeaning: async (quote: string, context: string): Promise<string | null> =>
+    serverJson<{ translation: string | null }>("translate", { text: quote, context, lenient: true })
+      .then((r) => r.translation)
+      .catch(() => null),
+
+  /** Delete a word (or a phrase or note) for good: its card, level and notes.
+   *  The deck and the word list wait a few seconds first, for undo. */
+  deleteWord: async (key: string) => {
+    if (key.startsWith(NOTE_PREFIX)) {
+      must(await supabase.from("annotations").delete().eq("id", Number(key.slice(NOTE_PREFIX.length))));
+    } else {
+      must(await supabase.from("words").delete().eq("lemma_key", key));
+    }
+    announce();
+    return { ok: true };
+  },
+
   noteMeaning: async (id: number, quote: string, context: string): Promise<string | null> => {
     const meaning = await serverJson<{ translation: string | null }>("translate", { text: quote, context, lenient: true })
       .then((r) => r.translation)

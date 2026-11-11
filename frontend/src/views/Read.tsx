@@ -11,7 +11,7 @@ import { StatusSlider } from "../StatusSlider";
 import { SpeakButton, speak } from "../Speak";
 import { nextStars, Stars } from "../Stars";
 import { applyTextScale } from "../theme";
-import { usePhone } from "../usePhone";
+import { useDockHeight, usePhone } from "../usePhone";
 import { copyToClaude } from "../Handoff";
 import { getWordInfo, hasMeaning } from "../wordInfo";
 import { WordDetails } from "../WordDetails";
@@ -51,8 +51,11 @@ export default function Library({
   onReview,
   onWords,
   onReviewNote,
+  onReading,
 }: {
   onReview: () => void;
+  /** a text opened or closed: the phone hides its tabs while reading */
+  onReading?: (reading: boolean) => void;
   onWords?: () => void;
   /** open the deck with only this note's cards */
   onReviewNote?: (textId: number) => void;
@@ -74,6 +77,12 @@ export default function Library({
   const [error, setError] = useState<string | null>(null);
 
   const refresh = () => api.listTexts().then(setTexts).catch((e) => setError(String(e)));
+
+  const reading = active !== null;
+  useEffect(() => {
+    onReading?.(reading);
+  }, [reading]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => onReading?.(false), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // tag -> note count, derived from the notes themselves
   const allTags = useMemo(() => {
@@ -216,7 +225,7 @@ export default function Library({
 
       {adding && (
         <div
-          className="fixed inset-0 z-30 flex items-start justify-center px-4 pt-[10vh]"
+          className="add-scrim fixed inset-0 z-30 flex items-start justify-center px-4 pt-[10vh]"
           style={{ background: "color-mix(in srgb, var(--fg) 24%, transparent)" }}
           onMouseDown={(e) => {
             if (e.target === e.currentTarget) closeAdd();
@@ -226,7 +235,7 @@ export default function Library({
             role="dialog"
             aria-modal="true"
             aria-label="add a note"
-            className="w-full max-w-2xl rounded-sm p-6"
+            className="add-sheet w-full max-w-2xl rounded-sm p-6"
             style={{
               background: "var(--bg)",
               boxShadow: "0 24px 60px -24px var(--shadow)",
@@ -258,7 +267,7 @@ export default function Library({
                 />
                 <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2">
                   <input
-                    className="min-w-0 flex-1 basis-40 bg-transparent text-sm outline-none"
+                    className="add-field min-w-0 flex-1 basis-40 bg-transparent text-sm outline-none"
                     style={{ borderBottom: "1px dashed var(--frame)" }}
                     placeholder="source: author, book or site"
                     value={newSource}
@@ -266,7 +275,7 @@ export default function Library({
                   />
                   <input
                     type="url"
-                    className="min-w-0 flex-1 basis-40 bg-transparent text-sm outline-none"
+                    className="add-field min-w-0 flex-1 basis-40 bg-transparent text-sm outline-none"
                     style={{ borderBottom: "1px dashed var(--frame)" }}
                     placeholder="link, https://…"
                     value={newUrl}
@@ -275,7 +284,7 @@ export default function Library({
                 </div>
                 <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2">
                   <input
-                    className="min-w-0 flex-1 bg-transparent text-sm outline-none"
+                    className="add-field min-w-0 flex-1 bg-transparent text-sm outline-none"
                     style={{ borderBottom: "1px dashed var(--frame)" }}
                     placeholder="tags, comma separated"
                     value={newTags}
@@ -297,7 +306,7 @@ export default function Library({
                   <button
                     onClick={() => saveNote("fanar")}
                     disabled={busy || !splitDraft().bodyText}
-                    className="rounded-sm px-4 py-1.5 text-sm disabled:opacity-40"
+                    className="add-save rounded-sm px-4 py-1.5 text-sm disabled:opacity-40"
                     style={{ background: "var(--ink-red)", color: "var(--bg)" }}
                   >
                     {busy ? "saving…" : "extract & save"}
@@ -677,10 +686,11 @@ function ActionMenu({ items }: { items: MenuItem[] }) {
         <Icon name="more" size={15} />
       </button>
       {open && (
-        <div className="frame absolute right-0 top-full z-10 mt-1 min-w-44 rounded-sm py-1">
+        <div role="menu" className="frame absolute right-0 top-full z-10 mt-1 min-w-44 rounded-sm py-1">
           {items.map((it, i) => (
             <button
               key={i}
+              role="menuitem"
               disabled={it.disabled}
               onClick={() => {
                 if (!it.keepOpen) setOpen(false);
@@ -702,7 +712,7 @@ const SHORTCUTS: [string, string][] = [
   ["← / j", "next word"],
   ["→ / k", "previous word"],
   ["↓ / ↑", "next / previous sentence"],
-  ["1 2 3 4", "tag: Not known · Hard · Easy · Known"],
+  ["1 2 3 4", "level: Not known · Hard · Easy · Known (then the next word)"],
   ["i", "stars: none, 1, 2, 3"],
   ["h", "hear the word"],
   ["d", "load word details (Fanar)"],
@@ -742,6 +752,19 @@ function ReadingView({
   // a selection of whole words, from a to b (either order), for a note or a phrase
   const [sel, setSel] = useState<{ a: Cursor; b: Cursor } | null>(null);
   const [dragging, setDragging] = useState(false);
+  // after a level, on to the next word (a setting kept on this device)
+  const [autoNext, setAutoNext] = useState(() => {
+    try {
+      return localStorage.getItem("tdb-auto-next") !== "0";
+    } catch {
+      return true;
+    }
+  });
+  // a phone: press and hold a word to start a selection, then tap words to stretch it
+  const [touchSel, setTouchSel] = useState(false);
+  const press = useRef<{ x: number; y: number; t: number } | null>(null);
+  const longPressed = useRef(false);
+  const moveRef = useRef<(dir: 1 | -1) => void>(() => {}); // the latest step to the next word
   const [noteOpen, setNoteOpen] = useState(false);
   const dragFrom = useRef<Cursor | null>(null);
   const dragMoved = useRef(false);
@@ -794,23 +817,7 @@ function ReadingView({
   // a phone: the reading on top, and what you press in a dock at the bottom of the screen
   const phone = usePhone();
   const dockRef = useRef<HTMLDivElement>(null);
-  const [dockH, setDockH] = useState(0);
-  useLayoutEffect(() => {
-    const el = dockRef.current;
-    if (!phone || !el) return;
-    const set = () => {
-      const h = Math.ceil(el.getBoundingClientRect().height);
-      setDockH(h);
-      document.documentElement.style.setProperty("--dock-h", `${h}px`);
-    };
-    set();
-    const ro = new ResizeObserver(set);
-    ro.observe(el);
-    return () => {
-      ro.disconnect();
-      document.documentElement.style.removeProperty("--dock-h");
-    };
-  }, [phone]);
+  const dockH = useDockHeight(dockRef, phone);
   const swipe = useRef<{ x: number; y: number } | null>(null);
 
   /** A sentence by index; -1 is the title. */
@@ -878,6 +885,8 @@ function ReadingView({
     [cursor, text],
   );
 
+  moveRef.current = move;
+
   const moveSentence = useCallback(
     (dir: 1 | -1) => {
       const target = dir > 0 ? meaningfulIdx.find((i) => i > shownIdx) : [...meaningfulIdx].reverse().find((i) => i < shownIdx);
@@ -901,14 +910,30 @@ function ReadingView({
   }
 
   // the level shows at once (the word pops); saving follows, and is undone if it fails
+  // the latest cursor and step, for the move that follows a level a moment later
+  const cursorRef = useRef(cursor);
+  cursorRef.current = cursor;
+  function nextAfterLevel() {
+    if (!autoNext) return;
+    const from = cursorRef.current;
+    // a beat, so the word's pop is seen; not if you moved meanwhile
+    window.setTimeout(() => {
+      if (cursorRef.current === from) moveRef.current(1);
+    }, 280);
+  }
+
   async function tag(status: string) {
     if (!current) return;
     const key = current.lemma_key;
     const was = text.statuses[key];
-    if (was === status) return;
+    if (was === status) {
+      nextAfterLevel(); // the same level again: it stands, on to the next word
+      return;
+    }
     setError(null);
     setPulse((p) => ({ key, n: (p?.n ?? 0) + 1 }));
     onChange({ ...text, statuses: { ...text.statuses, [key]: status } });
+    nextAfterLevel();
     // a word inside a saved phrase is reviewed through the phrase, not on its own card
     const inPhrase = !!cursor && (text.annotations ?? []).some((n) => covers(n, cursor));
     try {
@@ -986,7 +1011,34 @@ function ReadingView({
   function clearSel() {
     setSel(null);
     setNoteOpen(false);
+    setTouchSel(false);
   }
+
+  // the selection's meaning, looked up as soon as it settles, so you see it
+  // before deciding to keep it; saving then keeps this meaning
+  const selContext = useMemo(() => {
+    if (!selRange) return "";
+    const [a, b] = selRange;
+    return Array.from({ length: b.si - a.si + 1 }, (_, i) => sentenceOf(a.si + i).text).join(" ");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selRange, text]);
+  const [selMeaning, setSelMeaning] = useState<{ key: string; text: string | null; busy: boolean } | null>(null);
+  useEffect(() => {
+    if (!selRange || dragging || !selQuote) return;
+    const key = `${selQuote}|${selContext}`;
+    if (selMeaning?.key === key) return;
+    let live = true;
+    const t = window.setTimeout(() => {
+      setSelMeaning({ key, text: null, busy: true });
+      phraseMeaningCached(selQuote, selContext).then((m) => live && setSelMeaning({ key, text: m, busy: false }));
+    }, 250);
+    return () => {
+      live = false;
+      window.clearTimeout(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selQuote, selContext, dragging]);
+  const shownMeaning = selMeaning && selMeaning.key === `${selQuote}|${selContext}` ? selMeaning : null;
 
   // v / Enter: start a selection at the word, or stretch it to the word
   function anchorSelection() {
@@ -1016,7 +1068,8 @@ function ReadingView({
     if (!selRange) return;
     const [a, b] = selRange;
     const quote = selQuote;
-    const context = Array.from({ length: b.si - a.si + 1 }, (_, i) => sentenceOf(a.si + i).text).join(" ");
+    const context = selContext;
+    const found = shownMeaning?.text ?? null;
     // the selection's words: they leave the deck and are reviewed inside this card
     const keys: string[] = [];
     for (let si = a.si; si <= b.si; si++) {
@@ -1036,13 +1089,16 @@ function ReadingView({
         comment,
         quote,
         keys,
+        meaning: found,
       });
       clearSel();
       patchNotes((ns) => [...ns, note]);
       const what = comment ? "note saved" : "phrase saved";
       flash(folded ? `${what}: its words now review as this one card` : what);
-      const meaning = await api.noteMeaning(note.id, quote, context).catch(() => null);
-      if (meaning) patchNotes((ns) => ns.map((n) => (n.id === note.id ? { ...n, meaning } : n)));
+      if (!found) {
+        const meaning = await api.noteMeaning(note.id, quote, context).catch(() => null);
+        if (meaning) patchNotes((ns) => ns.map((n) => (n.id === note.id ? { ...n, meaning } : n)));
+      }
     } catch (e) {
       setError(String(e));
     }
@@ -1180,9 +1236,43 @@ function ReadingView({
                   dragFrom.current = { si, ti };
                   dragMoved.current = false;
                 }}
+                onTouchStart={(e) => {
+                  if (twin || !isWordToken(tok)) return;
+                  const t0 = e.touches[0];
+                  const t = window.setTimeout(() => {
+                    // held: a selection starts at this word; taps on words stretch it
+                    longPressed.current = true;
+                    setNoteOpen(false);
+                    setSel({ a: { si, ti }, b: { si, ti } });
+                    setTouchSel(true);
+                    navigator.vibrate?.(12);
+                  }, 420);
+                  press.current = { x: t0.clientX, y: t0.clientY, t };
+                }}
+                onTouchMove={(e) => {
+                  const p = press.current;
+                  const t0 = e.touches[0];
+                  if (p && Math.hypot(t0.clientX - p.x, t0.clientY - p.y) > 10) {
+                    window.clearTimeout(p.t);
+                    press.current = null;
+                  }
+                }}
+                onTouchEnd={() => {
+                  if (press.current) window.clearTimeout(press.current.t);
+                  press.current = null;
+                }}
+                onContextMenu={(e) => (touchSel || longPressed.current) && e.preventDefault()}
                 onClick={() => {
                   if (dragMoved.current) {
                     dragMoved.current = false;
+                    return;
+                  }
+                  if (longPressed.current) {
+                    longPressed.current = false; // the tap that ends a hold
+                    return;
+                  }
+                  if (touchSel && sel && isWordToken(tok)) {
+                    setSel({ a: sel.a, b: { si, ti } });
                     return;
                   }
                   clearSel();
@@ -1222,6 +1312,19 @@ function ReadingView({
   };
 
   const menuItems: MenuItem[] = [
+          {
+            label: `Next word after a level: ${autoNext ? "on" : "off"}`,
+            keepOpen: true,
+            onClick: () =>
+              setAutoNext((v) => {
+                try {
+                  localStorage.setItem("tdb-auto-next", v ? "0" : "1");
+                } catch {
+                  /* kept for this visit only */
+                }
+                return !v;
+              }),
+          },
           {
             label: "Mark all known",
             onClick: async () => {
@@ -1383,7 +1486,7 @@ function ReadingView({
           <StudyPanel text={text} onChange={onChange} flash={flash} focusKey={studyFocus} onClose={() => setShowStudy(false)} />
         )}
         {selRange && !dragging && (
-          <SelectionBar end={selRange[1]} quote={selQuote} focus={noteOpen} onSave={addNote} onClose={clearSel} />
+          <SelectionBar end={selRange[1]} quote={selQuote} focus={noteOpen} onSave={addNote} onClose={clearSel} meaning={shownMeaning} bottomInset={phone ? dockH : 0} touch={touchSel} />
         )}
 
         <NoteHead text={text} onChange={onChange} titleWords={renderSentence(-1)} />
@@ -1488,7 +1591,7 @@ function ReadingView({
       )}
 
       {selRange && !dragging && (
-        <SelectionBar end={selRange[1]} quote={selQuote} focus={noteOpen} onSave={addNote} onClose={clearSel} />
+        <SelectionBar end={selRange[1]} quote={selQuote} focus={noteOpen} onSave={addNote} onClose={clearSel} meaning={shownMeaning} bottomInset={phone ? dockH : 0} touch={touchSel} />
       )}
 
       <div className={`mt-6 ${focusMode ? "bento" : "grid gap-6 lg:grid-cols-[minmax(0,1fr)_230px]"}`}>
@@ -1638,12 +1741,18 @@ function SelectionBar({
   focus,
   onSave,
   onClose,
+  meaning,
+  bottomInset = 0,
+  touch = false,
 }: {
   end: Cursor;
   quote: string;
   focus: boolean;
   onSave: (comment: string) => Promise<void>;
   onClose: () => void;
+  meaning?: { text: string | null; busy: boolean } | null;
+  bottomInset?: number; // a dock at the bottom of the screen to stay above
+  touch?: boolean; // started by press and hold: taps stretch it
 }) {
   const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
   const [comment, setComment] = useState("");
@@ -1657,7 +1766,7 @@ function SelectionBar({
       const r = el.getBoundingClientRect();
       const width = Math.min(360, window.innerWidth - 16);
       setPos({
-        top: Math.min(r.bottom + 8, window.innerHeight - 170),
+        top: Math.max(8, Math.min(r.bottom + 8, window.innerHeight - bottomInset - 210)),
         left: Math.max(8, Math.min(r.left + r.width / 2 - width / 2, window.innerWidth - width - 8)),
         width,
       });
@@ -1669,7 +1778,7 @@ function SelectionBar({
       window.removeEventListener("scroll", place, true);
       window.removeEventListener("resize", place);
     };
-  }, [end]);
+  }, [end, bottomInset]);
 
   // a drag (or n) puts the cursor in the box
   useEffect(() => {
@@ -1704,6 +1813,9 @@ function SelectionBar({
           <Icon name="close" size={12} />
         </button>
       </div>
+      <p className={`sel-meaning hand ${!meaning || meaning.busy ? "pending" : ""}`} dir="auto">
+        {meaning?.text ?? (meaning && !meaning.busy ? "no meaning yet: it is tried again when you save" : "finding the meaning…")}
+      </p>
       <textarea
         ref={box}
         rows={2}
@@ -1720,7 +1832,7 @@ function SelectionBar({
         dir="auto"
       />
       <div className="sel-actions">
-        <span className="sel-hint">{busy ? "finding the meaning…" : "the meaning is added for you"}</span>
+        <span className="sel-hint">{touch ? "tap words to stretch it" : busy ? "saving…" : "kept with its meaning"}</span>
         <button onClick={save} disabled={busy} className="sel-save">
           {busy ? "saving…" : isNote ? "save note" : "save phrase"}
         </button>
@@ -2325,6 +2437,19 @@ function StudyPanel({
 }
 
 type Hover = { token: Token; si: number; ti: number; rect: DOMRect } | null;
+
+// a selection's meaning, asked for once per visit (the same words in the same sentence)
+const phraseCache = new Map<string, Promise<string | null>>();
+function phraseMeaningCached(quote: string, context: string): Promise<string | null> {
+  const key = `${quote}|${context}`;
+  let p = phraseCache.get(key);
+  if (!p) {
+    p = api.phraseMeaning(quote, context);
+    phraseCache.set(key, p);
+    p.then((m) => m === null && phraseCache.delete(key));
+  }
+  return p;
+}
 
 /** The word under the pointer, kept apart from the reading view's state. */
 function makeHoverStore() {
